@@ -2,7 +2,6 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Default Dark Mode Setup for RigX */
 :root {
   --background: #0f172a;
   --foreground: #ffffff;
