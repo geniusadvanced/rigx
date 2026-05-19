@@ -1,4 +1,5 @@
 import type { PosBranch, PosInvoice, PosPayment, PosQuotation, PosWarranty } from './types';
+import { normalizeMalaysiaPhoneNumber as normalizeMalaysiaPhoneNumberValue } from '@/lib/utils/phone';
 
 export type PosWhatsAppMessageType =
   | 'quotation'
@@ -89,11 +90,7 @@ export function normalizeWhatsAppPhoneNumber(phone: string): string {
 }
 
 export function normalizeMalaysiaPhoneNumber(phone: string): string {
-  const digits = String(phone || '').replace(/\D/g, '');
-  if (!digits) return '';
-  if (digits.startsWith('60')) return digits;
-  if (digits.startsWith('0')) return `6${digits}`;
-  return digits;
+  return normalizeMalaysiaPhoneNumberValue(phone);
 }
 
 function formatAmount(value?: number | null): string {

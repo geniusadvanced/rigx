@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb, FieldValue } from '@/lib/firebase/admin';
-import { getWhatsAppSenderForBranch, normalizeWhatsAppPhoneNumber } from '@/features/pos/whatsappService';
+import { getWhatsAppSenderForBranch } from '@/features/pos/whatsappService';
+import { malaysiaPhoneVariants, maskPhoneForLog, normalizeMalaysiaPhoneNumber } from '@/lib/utils/phone';
 
 const statusMap: Record<string, { status: string; label: string; progress: number }> = {
   received: { status: 'received', label: 'Device Received', progress: 10 },
@@ -42,14 +43,11 @@ function normalizeTrackingCode(value: string): string {
 }
 
 function normalizePhone(value: string): string {
-  return normalizeWhatsAppPhoneNumber(value);
+  return normalizeMalaysiaPhoneNumber(value);
 }
 
 function phoneVariants(value: string): string[] {
-  const raw = String(value || '').trim();
-  const normalized = normalizePhone(raw);
-  const local = normalized.startsWith('60') ? `0${normalized.slice(2)}` : '';
-  return Array.from(new Set([raw, normalized, local, normalized ? `+${normalized}` : ''].filter(Boolean)));
+  return malaysiaPhoneVariants(value);
 }
 
 function timestampToJson(value: unknown) {
@@ -93,6 +91,9 @@ function jobPhoneCandidates(job: FirebaseFirestore.DocumentData): string[] {
     job.normalizedPhone,
     job.phone,
     nestedCustomer.phone,
+    job.customerContact,
+    nestedCustomer.customerPhone,
+    nestedCustomer.customerContact,
     job.phoneSnapshot,
     job.customerPhoneSnapshot,
   ].map((value) => String(value || '')).filter(Boolean);
@@ -144,7 +145,17 @@ async function findJobsByPhone(phone: string) {
   if (!normalizedPhone) return [];
   const variants = phoneVariants(phone);
   const docs = new Map<string, FirebaseFirestore.QueryDocumentSnapshot | FirebaseFirestore.DocumentSnapshot>();
-  const jobFields = ['normalizedPhone', 'customerPhone', 'phone', 'phoneSnapshot', 'customerPhoneSnapshot', 'customer.phone'];
+  const jobFields = [
+    'normalizedPhone',
+    'customerPhone',
+    'phone',
+    'customerContact',
+    'phoneSnapshot',
+    'customerPhoneSnapshot',
+    'customer.phone',
+    'customer.customerPhone',
+    'customer.customerContact',
+  ];
 
   for (const field of jobFields) {
     for (const value of field === 'normalizedPhone' ? [normalizedPhone] : variants) {
@@ -158,6 +169,20 @@ async function findJobsByPhone(phone: string) {
     const snapshot = await adminDb.collection('jobs').where('customerId', '==', customerId).limit(10).get();
     snapshot.docs.forEach((doc) => docs.set(doc.id, doc));
   }
+
+  if (docs.size === 0) {
+    const recentSnapshot = await adminDb.collection('jobs').orderBy('updatedAt', 'desc').limit(200).get();
+    recentSnapshot.docs
+      .filter((doc) => jobMatchesPhone(doc.data() || {}, normalizedPhone))
+      .forEach((doc) => docs.set(doc.id, doc));
+  }
+
+  console.warn('[PUBLIC TRACKING PHONE LOOKUP]', JSON.stringify({
+    maskedPhone: maskPhoneForLog(phone),
+    normalizedMaskedPhone: maskPhoneForLog(normalizedPhone),
+    directMatches: docs.size,
+    linkedCustomerMatches: customerIds.length,
+  }));
 
   return Array.from(docs.values())
     .filter((doc) => jobMatchesPhone(doc.data() || {}, normalizedPhone) || customerIds.includes(String((doc.data() || {}).customerId || '')))

@@ -14,6 +14,7 @@ import { writeAuditLog } from '@/features/audit/services/auditLogService';
 import { db } from '@/lib/firebase/init';
 import { generateCustomerNumber } from '@/lib/numbering/publicNumberService';
 import { assertCan, can } from '@/lib/rbac/can';
+import { normalizeMalaysiaPhoneNumber } from '@/lib/utils/phone';
 import type { Job, Role, UserData } from '@/types';
 import type { Customer, CustomerBranch, CustomerFormInput, Device, DeviceFormInput } from '../types';
 
@@ -55,13 +56,7 @@ function normalizeUserBranch(value?: string | null): CustomerBranch | '' {
 }
 
 export function normalizeCustomerPhone(phone?: string | null): string {
-  const raw = String(phone || '').trim();
-  if (!raw) return '';
-  let cleaned = raw.replace(/[^\d+]/g, '');
-  if (cleaned.startsWith('+60')) cleaned = `60${cleaned.slice(3)}`;
-  else if (cleaned.startsWith('0')) cleaned = `60${cleaned.slice(1)}`;
-  else if (!cleaned.startsWith('60')) cleaned = `60${cleaned}`;
-  return cleaned.replace(/\D/g, '');
+  return normalizeMalaysiaPhoneNumber(phone);
 }
 
 function mapCustomer(customerId: string, data: Record<string, unknown>): Customer {

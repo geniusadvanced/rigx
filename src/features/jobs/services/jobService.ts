@@ -14,6 +14,7 @@ import {
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { db, storage } from '@/lib/firebase/init';
 import { assertCan, can } from '@/lib/rbac/can';
+import { normalizeMalaysiaPhoneNumber } from '@/lib/utils/phone';
 import { writeAuditLog } from '@/features/audit/services/auditLogService';
 import type { Job, QuotationStatus, Role, UserData } from '@/types';
 import {
@@ -359,7 +360,7 @@ export function validateCreateJobInput(input: CreateJobInput): Omit<CreateJobInp
     customerNumber: normalizeText(input.customerNumber || ''),
     deviceId: input.deviceId || null,
     customerPhone: normalizeText(input.customerPhone || ''),
-    normalizedPhone: normalizeText(input.normalizedPhone || ''),
+    normalizedPhone: normalizeText(input.normalizedPhone || normalizeMalaysiaPhoneNumber(input.customerPhone)),
     customerName: normalizeText(input.customerName),
     device: normalizeText(input.device),
     deviceType: normalizeText(input.deviceType || ''),
