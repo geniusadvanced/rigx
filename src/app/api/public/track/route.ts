@@ -3,6 +3,10 @@ import { adminDb, FieldValue } from '@/lib/firebase/admin';
 import { getWhatsAppSenderForBranch } from '@/features/pos/whatsappService';
 import { malaysiaPhoneVariants, maskPhoneForLog, normalizeMalaysiaPhoneNumber } from '@/lib/utils/phone';
 
+const TRACK_DEBUG_LABEL = '[PUBLIC TRACK DEBUG]';
+const TRACK_LOOKUP_VERSION = 'phone-lookup-v2';
+const FALLBACK_SCAN_LIMIT = 1000;
+
 const statusMap: Record<string, { status: string; label: string; progress: number }> = {
   received: { status: 'received', label: 'Device Received', progress: 10 },
   diagnosis: { status: 'diagnosis', label: 'Diagnosis In Progress', progress: 25 },
@@ -48,6 +52,28 @@ function normalizePhone(value: string): string {
 
 function phoneVariants(value: string): string[] {
   return malaysiaPhoneVariants(value);
+}
+
+function normalizeUnknownError(error: unknown) {
+  return {
+    errorName: error instanceof Error ? error.name : undefined,
+    errorMessage: error instanceof Error ? error.message : String(error),
+    errorCode:
+      typeof error === 'object' && error !== null && 'code' in error
+        ? String((error as { code?: unknown }).code)
+        : undefined,
+    errorString: String(error),
+  };
+}
+
+function trackDebug(payload: Record<string, unknown>) {
+  console.warn(TRACK_DEBUG_LABEL, JSON.stringify(payload));
+}
+
+function maskDocId(id: string): string {
+  if (!id) return '';
+  if (id.length <= 8) return `${id.slice(0, 2)}***`;
+  return `${id.slice(0, 4)}***${id.slice(-4)}`;
 }
 
 function timestampToJson(value: unknown) {
@@ -103,6 +129,21 @@ function jobMatchesPhone(job: FirebaseFirestore.DocumentData, normalizedPhone: s
   return jobPhoneCandidates(job).some((value) => normalizePhone(value) === normalizedPhone);
 }
 
+function customerPhoneCandidates(customer: FirebaseFirestore.DocumentData): string[] {
+  return [
+    customer.normalizedPhone,
+    customer.phone,
+    customer.customerPhone,
+    customer.customerContact,
+    customer.phoneSnapshot,
+    customer.customerPhoneSnapshot,
+  ].map((value) => String(value || '')).filter(Boolean);
+}
+
+function customerMatchesPhone(customer: FirebaseFirestore.DocumentData, normalizedPhone: string): boolean {
+  return customerPhoneCandidates(customer).some((value) => normalizePhone(value) === normalizedPhone);
+}
+
 function mapPublicJob(doc: FirebaseFirestore.QueryDocumentSnapshot | FirebaseFirestore.DocumentSnapshot) {
   const job = doc.data() || {};
   const branchId = String(job.branchId || 'cyberjaya');
@@ -137,6 +178,23 @@ async function linkedCustomerIds(normalizedPhone: string, variants: string[]): P
       snapshot.docs.forEach((doc) => ids.add(doc.id));
     }
   }
+  trackDebug({
+    checkpoint: 'customerExactQueries:complete',
+    normalizedMaskedPhone: maskPhoneForLog(normalizedPhone),
+    matchedCustomerCount: ids.size,
+  });
+  if (ids.size === 0) {
+    const customerSnapshot = await adminDb.collection('customers').limit(FALLBACK_SCAN_LIMIT).get();
+    customerSnapshot.docs
+      .filter((doc) => customerMatchesPhone(doc.data() || {}, normalizedPhone))
+      .forEach((doc) => ids.add(doc.id));
+    trackDebug({
+      checkpoint: 'customerFallbackScan:complete',
+      normalizedMaskedPhone: maskPhoneForLog(normalizedPhone),
+      scanned: customerSnapshot.size,
+      matchedCustomerCount: ids.size,
+    });
+  }
   return Array.from(ids);
 }
 
@@ -163,29 +221,58 @@ async function findJobsByPhone(phone: string) {
       snapshot.docs.forEach((doc) => docs.set(doc.id, doc));
     }
   }
+  trackDebug({
+    checkpoint: 'jobPhoneFieldQueries:complete',
+    rawMaskedPhone: maskPhoneForLog(phone),
+    normalizedMaskedPhone: maskPhoneForLog(normalizedPhone),
+    fieldsChecked: jobFields.length,
+    variantsChecked: variants.length,
+    matchedJobCount: docs.size,
+  });
 
   const customerIds = await linkedCustomerIds(normalizedPhone, variants);
   for (const customerId of customerIds.slice(0, 10)) {
     const snapshot = await adminDb.collection('jobs').where('customerId', '==', customerId).limit(10).get();
     snapshot.docs.forEach((doc) => docs.set(doc.id, doc));
   }
+  trackDebug({
+    checkpoint: 'linkedCustomerJobQueries:complete',
+    normalizedMaskedPhone: maskPhoneForLog(normalizedPhone),
+    linkedCustomerCount: customerIds.length,
+    matchedJobCount: docs.size,
+  });
 
-  if (docs.size === 0) {
-    const recentSnapshot = await adminDb.collection('jobs').orderBy('updatedAt', 'desc').limit(200).get();
+  const matchingDocs = () => Array.from(docs.values())
+    .filter((doc) => jobMatchesPhone(doc.data() || {}, normalizedPhone) || customerIds.includes(String((doc.data() || {}).customerId || '')));
+
+  let matches = matchingDocs();
+  if (matches.length === 0) {
+    const recentSnapshot = await adminDb.collection('jobs').orderBy('updatedAt', 'desc').limit(FALLBACK_SCAN_LIMIT).get();
     recentSnapshot.docs
       .filter((doc) => jobMatchesPhone(doc.data() || {}, normalizedPhone))
       .forEach((doc) => docs.set(doc.id, doc));
+    matches = matchingDocs();
+    trackDebug({
+      checkpoint: 'jobFallbackScan:complete',
+      normalizedMaskedPhone: maskPhoneForLog(normalizedPhone),
+      scanned: recentSnapshot.size,
+      matchedJobCount: matches.length,
+      matchedJobIds: matches.slice(0, 3).map((doc) => maskDocId(doc.id)),
+    });
   }
 
-  console.warn('[PUBLIC TRACKING PHONE LOOKUP]', JSON.stringify({
+  trackDebug({
+    checkpoint: 'lookup:complete',
     maskedPhone: maskPhoneForLog(phone),
     normalizedMaskedPhone: maskPhoneForLog(normalizedPhone),
-    directMatches: docs.size,
+    candidateJobCount: docs.size,
     linkedCustomerMatches: customerIds.length,
-  }));
+    matchedJobCount: matches.length,
+    matchedJobIds: matches.slice(0, 3).map((doc) => maskDocId(doc.id)),
+    noMatchReason: matches.length === 0 ? 'No job phone/customer phone matched after exact queries and fallback scan.' : undefined,
+  });
 
-  return Array.from(docs.values())
-    .filter((doc) => jobMatchesPhone(doc.data() || {}, normalizedPhone) || customerIds.includes(String((doc.data() || {}).customerId || '')))
+  return matches
     .sort((left, right) => timestampMillis((right.data() || {}).updatedAt || (right.data() || {}).createdAt) - timestampMillis((left.data() || {}).updatedAt || (left.data() || {}).createdAt))
     .slice(0, 10);
 }
@@ -216,6 +303,17 @@ export async function POST(request: NextRequest) {
     const trackingCode = normalizeTrackingCode(String(body.trackingCode || ''));
     const phone = String(body.phone || '');
 
+    trackDebug({
+      checkpoint: 'request:received',
+      version: TRACK_LOOKUP_VERSION,
+      projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || '',
+      collection: 'jobs',
+      method: 'POST',
+      hasRepairId: Boolean(repairId),
+      rawMaskedPhone: maskPhoneForLog(phone),
+      normalizedMaskedPhone: maskPhoneForLog(normalizePhone(phone)),
+    });
+
     if (!repairId && phone) {
       const jobs = await findJobsByPhone(phone);
       if (jobs.length === 0) return genericError();
@@ -235,7 +333,15 @@ export async function POST(request: NextRequest) {
 
     await recordPublicView(jobDoc);
     return NextResponse.json({ result: mapPublicJob(jobDoc), results: [] });
-  } catch {
+  } catch (error) {
+    trackDebug({
+      checkpoint: 'request:failed',
+      version: TRACK_LOOKUP_VERSION,
+      projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || '',
+      collection: 'jobs',
+      method: 'POST',
+      ...normalizeUnknownError(error),
+    });
     return genericError();
   }
 }
