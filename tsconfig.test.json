@@ -1,0 +1,26 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": ".test-build",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "target": "ES2022",
+    "isolatedModules": false,
+    "incremental": false,
+    "types": ["node"]
+  },
+  "include": [
+    "src/features/payroll/types.ts",
+    "src/features/payroll/utils/**/*.ts",
+    "src/features/hr/types.ts",
+    "src/features/hr/utils/**/*.ts",
+    "src/types/**/*.ts",
+    "test/**/*.ts",
+    "tests/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "src/legacy"
+  ]
+}

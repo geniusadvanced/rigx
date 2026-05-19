@@ -1,0 +1,3184 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function currentUserPath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    function currentUser() {
+      return get(currentUserPath());
+    }
+
+    function role() {
+      return signedIn() && exists(currentUserPath()) ? currentUser().data.role : null;
+    }
+
+    function isAdmin() {
+      return role() == 'admin';
+    }
+
+    function isManager() {
+      return role() == 'manager';
+    }
+
+    function isAdminOrManager() {
+      return isAdmin() || isManager();
+    }
+
+    function isOwner(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function branchMatchesCurrentUser(branchId) {
+      return signedIn()
+        && currentUser().data.branchId is string
+        && currentUser().data.branchId != ''
+        && (
+          branchId == currentUser().data.branchId
+          || (branchId == 'bangi' && currentUser().data.branchId in ['bangi', 'Bangi'])
+          || (branchId == 'cyberjaya' && currentUser().data.branchId in ['cyberjaya', 'Cyberjaya'])
+        );
+    }
+
+    function payrollStatus() {
+      return resource.data.status;
+    }
+
+    function requestPayrollStatus() {
+      return request.resource.data.status;
+    }
+
+    function isPayrollOwner() {
+      return signedIn() && resource.data.technicianId == request.auth.uid;
+    }
+
+    function payrollPath(payrollId) {
+      return /databases/$(database)/documents/payroll/$(payrollId);
+    }
+
+    function isPayrollOwnerById(payrollId) {
+      return signedIn()
+        && exists(payrollPath(payrollId))
+        && get(payrollPath(payrollId)).data.technicianId == request.auth.uid;
+    }
+
+    function isOwnPayrollDoc(payrollId) {
+      return signedIn()
+        && payrollId.matches('^' + request.auth.uid + '_.*')
+        && (
+          !exists(payrollPath(payrollId))
+          || get(payrollPath(payrollId)).data.technicianId == request.auth.uid
+        );
+    }
+
+    function isValidPayrollStatus(status) {
+      return status in ['draft', 'approved', 'paid'];
+    }
+
+    function isKnownPayrollAuditAction(action) {
+      return action in [
+        'payroll.generated',
+        'payroll.regenerated',
+        'payroll.approved',
+        'payroll.paid',
+        'payroll.payslip_generated',
+        'payroll.adjustment_created',
+        'payroll.month_closed',
+        'payroll.month_reopened',
+        'leave.approved',
+        'leave.rejected',
+        'leave.cancelled',
+        'hr.staff_created',
+        'hr.staff_auth_created',
+        'hr.invite_sent',
+        'hr.invite_failed',
+        'hr.invite_resent',
+        'hr.staff_updated',
+        'hr.salary_updated',
+        'hr.staff_deactivated',
+        'attendance.status_overridden',
+        'job_document.removed'
+      ];
+    }
+
+    function hasRequiredPayrollAuditFields() {
+      return isKnownPayrollAuditAction(request.resource.data.action)
+        && request.resource.data.userId is string
+        && request.resource.data.generatedAt is timestamp
+        && (
+          (
+            request.resource.data.payrollId is string
+            && request.resource.data.targetCollection == 'payroll'
+            && request.resource.data.targetId == request.resource.data.payrollId
+          )
+          ||
+          (
+            request.resource.data.action in ['payroll.month_closed', 'payroll.month_reopened']
+            && request.resource.data.payrollMonth is string
+            && request.resource.data.targetCollection == 'payroll_months'
+            && request.resource.data.targetId == request.resource.data.payrollMonth
+          )
+          ||
+          (
+            request.resource.data.payrollId is string
+            && request.resource.data.action == 'payroll.adjustment_created'
+            && request.resource.data.targetCollection == 'payroll_adjustments'
+            && request.resource.data.targetId is string
+          )
+          ||
+          (
+            request.resource.data.action in ['leave.approved', 'leave.rejected']
+            && request.resource.data.leaveId is string
+            && request.resource.data.targetCollection == 'leaves'
+            && request.resource.data.targetId == request.resource.data.leaveId
+          )
+          ||
+          (
+            request.resource.data.action == 'leave.cancelled'
+            && request.resource.data.leaveId is string
+            && request.resource.data.targetCollection == 'leaves'
+            && request.resource.data.targetId == request.resource.data.leaveId
+          )
+          ||
+          (
+            request.resource.data.action in [
+              'hr.staff_created',
+              'hr.staff_auth_created',
+              'hr.invite_sent',
+              'hr.invite_failed',
+              'hr.invite_resent',
+              'hr.staff_updated',
+              'hr.salary_updated',
+              'hr.staff_deactivated'
+            ]
+            && request.resource.data.staffUid is string
+            && request.resource.data.targetCollection == 'users'
+            && request.resource.data.targetId == request.resource.data.staffUid
+          )
+          ||
+          (
+            request.resource.data.action == 'attendance.status_overridden'
+            && request.resource.data.attendanceId is string
+            && request.resource.data.targetCollection == 'attendance'
+            && request.resource.data.targetId == request.resource.data.attendanceId
+          )
+          ||
+          (
+            request.resource.data.action == 'job_document.removed'
+            && request.resource.data.documentId is string
+            && request.resource.data.jobId is string
+            && request.resource.data.removedBy == request.auth.uid
+            && request.resource.data.removedAt is timestamp
+            && request.resource.data.reason is string
+            && request.resource.data.reason != ''
+            && request.resource.data.targetCollection == 'documents'
+            && request.resource.data.targetId == request.resource.data.documentId
+          )
+        );
+    }
+
+    function canCreatePayslipAuditLog() {
+      return request.resource.data.action == 'payroll.payslip_generated'
+        && hasRequiredPayrollAuditFields()
+        && request.resource.data.userId == request.auth.uid
+        && isPayrollOwnerById(request.resource.data.payrollId);
+    }
+
+    function isNonPayslipAuditLog() {
+      return request.resource.data.action != 'payroll.payslip_generated';
+    }
+
+    function isOwnPayslipAuditLog() {
+      return signedIn()
+        && resource.data.action == 'payroll.payslip_generated'
+        && resource.data.payrollId is string
+        && resource.data.userId == request.auth.uid
+        && isPayrollOwnerById(resource.data.payrollId);
+    }
+
+    function adjustmentPayrollPath(data) {
+      return /databases/$(database)/documents/payroll/$(data.technicianId + '_' + data.month);
+    }
+
+    function payrollMonthPath(month) {
+      return /databases/$(database)/documents/payroll_months/$(month);
+    }
+
+    function payrollMonthIsOpen(month) {
+      return !(exists(payrollMonthPath(month)) && get(payrollMonthPath(month)).data.status == 'closed');
+    }
+
+    function adjustmentPayrollIsUnlocked(data) {
+      return !exists(adjustmentPayrollPath(data))
+        || get(adjustmentPayrollPath(data)).data.status == 'draft';
+    }
+
+    function hasValidAdjustmentFields(data) {
+      return data.technicianId is string
+        && data.month is string
+        && data.type in ['bonus', 'deduction']
+        && data.category is string
+        && data.amount is number
+        && data.amount > 0
+        && data.reason is string
+        && data.createdBy == request.auth.uid
+        && data.createdAt is timestamp;
+    }
+
+    function hasValidPayrollMonthCreate(monthId) {
+      return request.resource.data.month == monthId
+        && request.resource.data.status in ['open', 'closed']
+        && (
+          request.resource.data.status == 'open'
+          || (
+            request.resource.data.closedBy == request.auth.uid
+            && request.resource.data.closedAt is timestamp
+          )
+        );
+    }
+
+    function hasValidLeaveCreateFields(data) {
+      return data.userId == request.auth.uid
+        && data.technicianId == request.auth.uid
+        && data.createdBy == request.auth.uid
+        && data.startDate is string
+        && data.endDate is string
+        && data.startDate <= data.endDate
+        && data.leaveType in ['annual', 'emergency', 'medical', 'unpaid', 'other']
+        && data.reason is string
+        && data.status == 'pending'
+        && data.createdAt is timestamp
+        && hasValidOptionalLeaveMcFields(data);
+    }
+
+    function hasValidOptionalLeaveMcFields(data) {
+      return (
+          !data.keys().hasAny(['mcFileUrl', 'mcFilePath', 'mcFileName', 'mcFileType', 'mcFileSize', 'mcUploadedAt'])
+        )
+        || (
+          data.leaveType == 'medical'
+          && data.mcFileUrl is string
+          && data.mcFileUrl != ''
+          && data.mcFilePath is string
+          && data.mcFilePath.matches('^leave-mc/' + request.auth.uid + '/[^/]+/[^/]+$')
+          && data.mcFileName is string
+          && data.mcFileType in ['application/pdf', 'image/jpeg', 'image/png']
+          && data.mcFileSize is number
+          && data.mcFileSize > 0
+          && data.mcFileSize <= 5 * 1024 * 1024
+          && data.mcUploadedAt is timestamp
+        );
+    }
+
+    function hasValidLeaveEntitlement(data, technicianId) {
+      return data.technicianId == technicianId
+        && data.annual is number
+        && data.annual >= 0
+        && data.medical is number
+        && data.medical >= 0
+        && data.emergency is number
+        && data.emergency >= 0
+        && data.others is number
+        && data.others >= 0
+        && data.updatedBy == request.auth.uid
+        && data.updatedAt is timestamp;
+    }
+
+    function isOwnPendingLeave() {
+      return signedIn()
+        && resource.data.technicianId == request.auth.uid
+        && resource.data.status == 'pending';
+    }
+
+    function isValidStaffRole(data) {
+      return data.role in ['admin', 'manager', 'technician'];
+    }
+
+    function hasValidBaseSalary(data) {
+      return data.baseSalary is number && data.baseSalary >= 0;
+    }
+
+    function hasRequiredActiveTechnicianFields(data) {
+      return data.role != 'technician'
+        || data.isActive != true
+        || (
+          data.staffId is string
+          && data.staffId != ''
+          && (
+            (data.name is string && data.name != '')
+            || (data.displayName is string && data.displayName != '')
+          )
+          && data.branchId is string
+          && data.branchId != ''
+          && hasValidBaseSalary(data)
+        );
+    }
+
+    function hasValidStaffProfile(data) {
+      return isValidStaffRole(data)
+        && data.email is string
+        && data.isActive is bool
+        && hasValidBaseSalary(data)
+        && hasRequiredActiveTechnicianFields(data);
+    }
+
+    function isValidAttendanceStatus(status) {
+      return status in ['present', 'late', 'half_day', 'absent', 'rejected', 'cancelled'];
+    }
+
+    function isOwnAttendanceDoc(attendanceId) {
+      return signedIn()
+        && attendanceId.matches('^' + request.auth.uid + '_.*');
+    }
+
+    function isOwnAttendanceCreate(attendanceId) {
+      return isOwnAttendanceDoc(attendanceId)
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.date is string;
+    }
+
+    function isOwnAttendanceClockOutUpdate(attendanceId) {
+      return isOwnAttendanceDoc(attendanceId)
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.date == resource.data.date;
+    }
+
+    function jobPath(jobId) {
+      return /databases/$(database)/documents/jobs/$(jobId);
+    }
+
+    function quotationPath(quotationId) {
+      return /databases/$(database)/documents/quotations/$(quotationId);
+    }
+
+    function partsOrderPath(partsOrderId) {
+      return /databases/$(database)/documents/partsOrders/$(partsOrderId);
+    }
+
+    function jobDocumentRecordPath(documentId) {
+      return /databases/$(database)/documents/jobDocuments/$(documentId);
+    }
+
+    function warrantyClaimPath(claimId) {
+      return /databases/$(database)/documents/warrantyClaims/$(claimId);
+    }
+
+    function isAssignedJobTechnician(jobId) {
+      return signedIn()
+        && exists(jobPath(jobId))
+        && get(jobPath(jobId)).data.technicianId == request.auth.uid;
+    }
+
+    function isValidDeviceChecklistStatus(status) {
+      return status in [
+        'draft',
+        'staff_completed',
+        'completed_by_staff',
+        'sent_to_customer',
+        'customer_signed',
+        'signature_overridden',
+        'final_checked',
+        'completed'
+      ];
+    }
+
+    function canAccessDeviceChecklist(data) {
+      return signedIn()
+        && data.jobId is string
+        && exists(jobPath(data.jobId))
+        && data.branchId == get(jobPath(data.jobId)).data.branchId
+        && (
+          isAdmin()
+          || (isManager() && data.branchId == currentUser().data.branchId)
+          || (
+            role() == 'technician'
+            && (
+              data.assignedTechnicianId == request.auth.uid
+              || get(jobPath(data.jobId)).data.technicianId == request.auth.uid
+            )
+          )
+        );
+    }
+
+    function hasValidTechnicianVerification(data) {
+      return data is map
+        && data.technicianId is string
+        && data.technicianName is string
+        && (!('technicianRole' in data) || data.technicianRole is string)
+        && (!('branchId' in data) || data.branchId is string)
+        && data.checkedAt is timestamp
+        && data.authUid is string
+        && data.verificationText == 'Auto verified by RIGX System';
+    }
+
+    function hasValidDeviceChecklistTechnicianVerification(data) {
+      return !('technicianVerification' in data)
+        || hasValidTechnicianVerification(data.technicianVerification);
+    }
+
+    function hasValidDeviceChecklistTechnicianVerificationCreate(data) {
+      return !('technicianVerification' in data)
+        || (
+          hasValidTechnicianVerification(data.technicianVerification)
+          && data.technicianVerification.authUid == request.auth.uid
+        );
+    }
+
+    function hasValidDeviceChecklistTechnicianVerificationUpdate() {
+      return !('technicianVerification' in request.resource.data)
+        || (
+          hasValidTechnicianVerification(request.resource.data.technicianVerification)
+          && (
+            (
+              'technicianVerification' in resource.data
+              && request.resource.data.technicianVerification == resource.data.technicianVerification
+            )
+            || (
+              !('technicianVerification' in resource.data)
+              && request.resource.data.technicianVerification.authUid == request.auth.uid
+            )
+          )
+        );
+    }
+
+    function hasValidDeviceChecklistCustomerSignature(data) {
+      return !('customerSignature' in data)
+        || (
+          data.customerSignature is map
+          && data.customerSignature.keys().hasOnly([
+            'name',
+            'phone',
+            'dataUrl',
+            'typedSignature',
+            'signedAt',
+            'tokenUsed'
+          ])
+          && (!('name' in data.customerSignature) || data.customerSignature.name is string)
+          && (!('phone' in data.customerSignature) || data.customerSignature.phone is string)
+          && (!('dataUrl' in data.customerSignature) || data.customerSignature.dataUrl is string)
+          && (!('typedSignature' in data.customerSignature) || data.customerSignature.typedSignature is string)
+          && (!('signedAt' in data.customerSignature) || data.customerSignature.signedAt is timestamp)
+          && (!('tokenUsed' in data.customerSignature) || data.customerSignature.tokenUsed is string)
+        );
+    }
+
+    function hasValidDeviceChecklistCore(data) {
+      return data.keys().hasOnly([
+          'jobId',
+          'jobNumber',
+          'customerId',
+          'customerNameSnapshot',
+          'customerPhoneSnapshot',
+          'customerEmailSnapshot',
+          'deviceId',
+          'deviceCategorySnapshot',
+          'deviceBrandModelSnapshot',
+          'deviceSerialOrImeiSnapshot',
+          'reportedIssueSnapshot',
+          'branchId',
+          'assignedTechnicianId',
+          'assignedTechnicianName',
+          'importedFromJob',
+          'importedFromCustomer',
+          'importedFromDevice',
+          'items',
+          'accessories',
+          'internalComponents',
+          'technicianVerification',
+          'externalConditionSummary',
+          'functionalChecklist',
+          'accessoriesReceived',
+          'internalComponentInventory',
+          'disclaimer',
+          'checklistStatus',
+          'publicSignatureToken',
+          'publicSignatureTokenCreatedAt',
+          'publicSignatureTokenExpiresAt',
+          'sentToCustomerAt',
+          'sentToCustomerBy',
+          'customerSignedAt',
+          'customerSignedName',
+          'customerSignedPhone',
+          'customerSignatureDataUrl',
+          'customerTypedSignature',
+          'customerAcknowledgedDisclaimer',
+          'customerSignature',
+          'publicSignatureTokenUsed',
+          'customerSignedIp',
+          'customerSignedUserAgent',
+          'overrideBy',
+          'overrideAt',
+          'overrideReason',
+          'createdBy',
+          'createdByDisplayName',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.jobId is string
+        && data.jobNumber is string
+        && data.customerId is string
+        && data.customerNameSnapshot is string
+        && data.customerPhoneSnapshot is string
+        && (!('customerEmailSnapshot' in data) || data.customerEmailSnapshot is string)
+        && (!('deviceId' in data) || data.deviceId is string)
+        && data.deviceCategorySnapshot is string
+        && data.deviceBrandModelSnapshot is string
+        && data.deviceSerialOrImeiSnapshot is string
+        && data.reportedIssueSnapshot is string
+        && data.branchId is string
+        && (!('assignedTechnicianId' in data) || data.assignedTechnicianId is string)
+        && (!('assignedTechnicianName' in data) || data.assignedTechnicianName is string)
+        && data.importedFromJob is bool
+        && data.importedFromCustomer is bool
+        && data.importedFromDevice is bool
+        && (!('items' in data) || data.items is list)
+        && (!('accessories' in data) || data.accessories is list)
+        && (!('internalComponents' in data) || data.internalComponents is map)
+        && hasValidDeviceChecklistTechnicianVerification(data)
+        && data.externalConditionSummary is string
+        && data.functionalChecklist is string
+        && data.accessoriesReceived is string
+        && data.internalComponentInventory is string
+        && data.disclaimer is string
+        && isValidDeviceChecklistStatus(data.checklistStatus)
+        && (!('publicSignatureToken' in data) || data.publicSignatureToken is string)
+        && (!('publicSignatureTokenCreatedAt' in data) || data.publicSignatureTokenCreatedAt is timestamp)
+        && (!('publicSignatureTokenExpiresAt' in data) || data.publicSignatureTokenExpiresAt is timestamp)
+        && (!('sentToCustomerAt' in data) || data.sentToCustomerAt is timestamp)
+        && (!('sentToCustomerBy' in data) || data.sentToCustomerBy is string)
+        && (!('customerSignedAt' in data) || data.customerSignedAt is timestamp)
+        && (!('customerSignedName' in data) || data.customerSignedName is string)
+        && (!('customerSignedPhone' in data) || data.customerSignedPhone is string)
+        && (!('customerSignatureDataUrl' in data) || data.customerSignatureDataUrl is string)
+        && (!('customerTypedSignature' in data) || data.customerTypedSignature is string)
+        && (!('customerAcknowledgedDisclaimer' in data) || data.customerAcknowledgedDisclaimer is bool)
+        && hasValidDeviceChecklistCustomerSignature(data)
+        && (!('publicSignatureTokenUsed' in data) || data.publicSignatureTokenUsed is string)
+        && (!('customerSignedIp' in data) || data.customerSignedIp is string)
+        && (!('customerSignedUserAgent' in data) || data.customerSignedUserAgent is string)
+        && (!('overrideBy' in data) || data.overrideBy is string)
+        && (!('overrideAt' in data) || data.overrideAt is timestamp)
+        && (!('overrideReason' in data) || data.overrideReason is string)
+        && data.createdBy is string
+        && data.createdByDisplayName is string
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidDeviceChecklistCreate(data) {
+      return hasValidDeviceChecklistCore(data)
+        && hasValidDeviceChecklistTechnicianVerificationCreate(data)
+        && canAccessDeviceChecklist(data)
+        && data.createdBy == request.auth.uid
+        && data.checklistStatus == 'draft';
+    }
+
+    function isValidDeviceChecklistUpdate() {
+      return hasValidDeviceChecklistCore(request.resource.data)
+        && hasValidDeviceChecklistTechnicianVerificationUpdate()
+        && canAccessDeviceChecklist(resource.data)
+        && canAccessDeviceChecklist(request.resource.data)
+        && request.resource.data.jobId == resource.data.jobId
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && (
+          request.resource.data.checklistStatus in ['draft', 'staff_completed', 'completed_by_staff', 'sent_to_customer', 'final_checked', 'completed']
+          || (
+            request.resource.data.checklistStatus == 'signature_overridden'
+            && isAdminOrManager()
+            && request.resource.data.overrideBy == request.auth.uid
+            && request.resource.data.overrideReason is string
+            && request.resource.data.overrideReason != ''
+          )
+        );
+    }
+
+    function isAssignedJobResource() {
+      return signedIn()
+        && resource.data.technicianId == request.auth.uid;
+    }
+
+    function isValidJobDocumentType(type) {
+      return type in [
+        'checklist',
+        'supplier_receipt',
+        'logistic_receipt',
+        'invoice',
+        'payment_receipt',
+        'photo'
+      ];
+    }
+
+    function isValidJobDocumentStatus(status) {
+      return status in ['pending', 'approved', 'rejected', 'removed'];
+    }
+
+    function isValidJobDocumentCreate(data) {
+      return data.jobId is string
+        && exists(jobPath(data.jobId))
+        && data.branchId is string
+        && data.branchId == get(jobPath(data.jobId)).data.branchId
+        && (!('customerId' in data) || data.customerId == get(jobPath(data.jobId)).data.customerId)
+        && (!('jobNumber' in data) || data.jobNumber is string)
+        && isValidJobDocumentType(data.type)
+        && data.fileUrl is string
+        && (!('storagePath' in data) || data.storagePath is string)
+        && (!('fileName' in data) || data.fileName is string)
+        && (!('amount' in data) || data.amount is number)
+        && data.uploadedBy == request.auth.uid
+        && data.uploadedAt is timestamp
+        && data.status == 'pending';
+    }
+
+    function isValidJobDocumentReview() {
+      return isAdminOrManager()
+        && resource.data.status == 'pending'
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'status',
+          'reviewedBy',
+          'reviewedAt',
+          'rejectionReason'
+        ])
+        && isValidJobDocumentStatus(request.resource.data.status)
+        && request.resource.data.status in ['approved', 'rejected']
+        && request.resource.data.reviewedBy == request.auth.uid
+        && request.resource.data.reviewedAt is timestamp;
+    }
+
+    function isValidJobDocumentRemoval() {
+      return isAdmin()
+        && resource.data.status != 'removed'
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'status',
+          'removedBy',
+          'removedAt',
+          'removeReason',
+          'updatedAt'
+        ])
+        && request.resource.data.status == 'removed'
+        && request.resource.data.removedBy == request.auth.uid
+        && request.resource.data.removedAt is timestamp
+        && request.resource.data.removeReason is string
+        && request.resource.data.removeReason != '';
+    }
+
+    function isValidJobFinancialSnapshot(financialId) {
+      return request.resource.data.jobId == financialId
+        && exists(jobPath(financialId))
+        && (
+          get(jobPath(financialId)).data.status == 'approved'
+          || get(jobPath(financialId)).data.status == 'completed'
+          || get(jobPath(financialId)).data.status == 'ready_for_collection'
+          || get(jobPath(financialId)).data.status == 'collected'
+        )
+        && request.resource.data.revenue is number
+        && request.resource.data.partsCost is number
+        && request.resource.data.logisticCost is number
+        && request.resource.data.totalCost is number
+        && request.resource.data.grossProfit is number
+        && request.resource.data.commission is number
+        && request.resource.data.netProfit is number
+        && request.resource.data.locked == true;
+    }
+
+    function isValidLifecycleStatus(status) {
+      return status in [
+        'received',
+        'diagnosis',
+        'quotation_pending',
+        'quotation_sent',
+        'customer_approved',
+        'in_repair',
+        'waiting_parts',
+        'qc_check',
+        'completed',
+        'ready_for_collection',
+        'collected',
+        'cancelled'
+      ];
+    }
+
+    function isValidRepairLifecycleStatus(status) {
+      return status in [
+        'received',
+        'diagnosis',
+        'quotation_pending',
+        'quotation_sent',
+        'customer_approved',
+        'customer_rejected',
+        'repair_in_progress',
+        'repair_completed',
+        'ready_for_pickup',
+        'delivered',
+        'warranty_active',
+        'warranty_expired',
+        'cancelled'
+      ];
+    }
+
+    function hasValidJobCreateFields(data, jobId) {
+      return data.jobNo is string
+        && data.jobNo.matches('^RIGX-[0-9]{6}$')
+        && data.jobNumber is string
+        && data.jobNumber == data.jobNo
+        && data.jobSheetNo is string
+        && data.jobSheetNo == data.jobNo
+        && existsAfter(/databases/$(database)/documents/jobNumberRegistry/$(data.jobNo))
+        && getAfter(/databases/$(database)/documents/jobNumberRegistry/$(data.jobNo)).data.jobId == jobId
+        && (!('agnJobNumber' in data) || data.agnJobNumber is string)
+        && (!('customerNumber' in data) || (data.customerNumber is string && data.customerNumber.matches('^RIGX-[0-9]{6}$')))
+        && (!('normalizedPhone' in data) || data.normalizedPhone is string)
+        && data.customerName is string
+        && data.customerName != ''
+        && data.device is string
+        && data.device != ''
+        && data.branchId is string
+        && data.branchId != ''
+        && data.technicianId is string
+        && data.technicianId != ''
+        && data.totalSale is number
+        && data.totalSale >= 0
+        && data.createdBy == request.auth.uid
+        && data.createdByDisplayName is string
+        && data.commissionAmount == 0
+        && data.commissionStatus == 'pending_documents'
+        && data.costProfile in ['parts_required', 'service_only', 'custom']
+        && data.requiredDocuments is list
+        && isValidLifecycleStatus(data.status)
+        && data.statusHistory is list;
+    }
+
+    function isTechnicianJobCreate(data, jobId) {
+      return role() == 'technician'
+        && hasValidJobCreateFields(data, jobId)
+        && data.technicianId == request.auth.uid
+        && currentUser().data.branchId is string
+        && currentUser().data.branchId != ''
+        && branchMatchesCurrentUser(data.branchId)
+        && data.status == 'received'
+        && data.approvalStatus == 'submitted'
+        && data.costProfile == 'parts_required';
+    }
+
+    function isAdminManagerJobCreate(data, jobId) {
+      return isAdminOrManager()
+        && hasValidJobCreateFields(data, jobId)
+        && (isAdmin() || branchMatchesCurrentUser(data.branchId))
+        && data.status == 'received'
+        && data.approvalStatus == 'approved'
+        && data.approvedBy == request.auth.uid
+        && data.approvedAt is timestamp;
+    }
+
+    function isJobApprovalUpdate() {
+      return isAdminOrManager()
+        && resource.data.status == 'pending_approval'
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'status',
+          'approvalStatus',
+          'approvedBy',
+          'approvedAt',
+          'rejectedBy',
+          'rejectedAt',
+          'updatedAt'
+        ])
+        && (
+          (
+            request.resource.data.status == 'approved'
+            && request.resource.data.approvalStatus == 'approved'
+            && request.resource.data.approvedBy == request.auth.uid
+            && request.resource.data.approvedAt is timestamp
+          )
+          ||
+          (
+            request.resource.data.status == 'rejected'
+            && request.resource.data.approvalStatus == 'rejected'
+            && request.resource.data.rejectedBy == request.auth.uid
+            && request.resource.data.rejectedAt is timestamp
+          )
+        );
+    }
+
+    function isJobCommissionUpdate() {
+      return isAdminOrManager()
+        && resource.data.approvalStatus == 'approved'
+        && request.resource.data.status == resource.data.status
+        && request.resource.data.technicianId == resource.data.technicianId
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'commissionAmount',
+          'commissionStatus',
+          'updatedAt'
+        ])
+        && request.resource.data.commissionAmount is number
+        && request.resource.data.commissionStatus in ['pending_documents', 'pending_approval', 'approved', 'paid'];
+    }
+
+    function isJobRequirementUpdate() {
+      return isAdminOrManager()
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'costProfile',
+          'requiredDocuments',
+          'updatedAt'
+        ])
+        && request.resource.data.costProfile in ['parts_required', 'service_only', 'custom']
+        && request.resource.data.requiredDocuments is list;
+    }
+
+    function isTechnicianAllowedJobTransition(fromStatus, toStatus) {
+      return (
+          fromStatus == 'received' && toStatus == 'diagnosis'
+        )
+        || (
+          fromStatus == 'diagnosis' && toStatus == 'quotation_pending'
+        )
+        || (
+          fromStatus == 'quotation_pending' && toStatus == 'quotation_sent'
+        )
+        || (
+          fromStatus == 'customer_approved' && toStatus == 'in_repair'
+        )
+        || (
+          fromStatus == 'in_repair' && toStatus == 'qc_check'
+        )
+        || (
+          fromStatus == 'in_repair' && toStatus == 'completed'
+        )
+        || (
+          fromStatus == 'waiting_parts' && toStatus == 'in_repair'
+        )
+        || (
+          fromStatus == 'qc_check' && toStatus == 'completed'
+        )
+        || (
+          fromStatus == 'completed' && toStatus == 'ready_for_collection'
+        );
+    }
+
+    function isJobLifecycleUpdate() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'status',
+          'lifecycleStatus',
+          'lifecycleHistory',
+          'statusHistory',
+          'receivedAt',
+          'diagnosisStartedAt',
+          'diagnosisCompletedAt',
+          'quotationSentAt',
+          'customerApprovedAt',
+          'customerRejectedAt',
+          'repairStartedAt',
+          'repairCompletedAt',
+          'readyForPickupAt',
+          'readyForPickupBy',
+          'readyForPickupByDisplayName',
+          'pickupNotifiedAt',
+          'pickupNotifiedBy',
+          'pickupNotifiedByDisplayName',
+          'repairSummaryPublic',
+          'deliveredAt',
+          'warrantyStartedAt',
+          'warrantyExpiresAt',
+          'cancelledAt',
+          'quotationStatus',
+          'diagnosisNote',
+          'repairNote',
+          'qcNote',
+          'collectionNote',
+          'quotationNote',
+          'customerApprovalStatus',
+          'updatedAt'
+        ])
+        && isValidLifecycleStatus(request.resource.data.status)
+        && isValidRepairLifecycleStatus(request.resource.data.lifecycleStatus)
+        && request.resource.data.lifecycleHistory is list
+        && (
+          request.resource.data.lifecycleStatus != 'repair_in_progress'
+          || resource.data.quotationStatus == 'approved'
+          || resource.data.lifecycleStatus == 'customer_approved'
+          || resource.data.status == 'customer_approved'
+        )
+        && request.resource.data.statusHistory is list
+        && (
+          (
+            isAdminOrManager()
+          )
+          ||
+          (
+            role() == 'technician'
+            && resource.data.technicianId == request.auth.uid
+            && request.resource.data.technicianId == resource.data.technicianId
+            && request.resource.data.technicianName == resource.data.technicianName
+            && request.resource.data.quotationAmount == resource.data.quotationAmount
+            && request.resource.data.quotationStatus == resource.data.quotationStatus
+            && request.resource.data.quotationApprovedBy == resource.data.quotationApprovedBy
+            && request.resource.data.customerApprovalStatus == resource.data.customerApprovalStatus
+            && request.resource.data.createdBy == resource.data.createdBy
+            && request.resource.data.createdAt == resource.data.createdAt
+            && request.resource.data.costProfile == resource.data.costProfile
+            && request.resource.data.requiredDocuments == resource.data.requiredDocuments
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+              'status',
+              'lifecycleStatus',
+              'lifecycleHistory',
+              'statusHistory',
+              'diagnosisStartedAt',
+              'diagnosisCompletedAt',
+              'quotationSentAt',
+              'repairStartedAt',
+              'repairCompletedAt',
+              'readyForPickupAt',
+              'readyForPickupBy',
+              'readyForPickupByDisplayName',
+              'pickupNotifiedAt',
+              'pickupNotifiedBy',
+              'pickupNotifiedByDisplayName',
+              'repairSummaryPublic',
+              'diagnosisNote',
+              'repairNote',
+              'qcNote',
+              'updatedAt'
+            ])
+            && isTechnicianAllowedJobTransition(resource.data.status, request.resource.data.status)
+          )
+        );
+    }
+
+    function isJobDetailsUpdate() {
+      return isAdminOrManager()
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'customerName',
+          'customerId',
+          'deviceId',
+          'customerPhone',
+          'device',
+          'deviceType',
+          'deviceBrand',
+          'deviceModel',
+          'devicePassword',
+          'serialNumber',
+          'issueDescription',
+          'customerApprovalStatus',
+          'updatedAt'
+        ])
+        && request.resource.data.technicianId == resource.data.technicianId
+        && request.resource.data.technicianName == resource.data.technicianName
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.costProfile == resource.data.costProfile
+        && request.resource.data.requiredDocuments == resource.data.requiredDocuments
+        && request.resource.data.customerName is string
+        && request.resource.data.customerName != ''
+        && (request.resource.data.customerId == null || request.resource.data.customerId is string)
+        && (request.resource.data.deviceId == null || request.resource.data.deviceId is string)
+        && request.resource.data.deviceModel is string
+        && request.resource.data.deviceModel != ''
+        && (!('devicePassword' in request.resource.data) || request.resource.data.devicePassword is string)
+        && request.resource.data.customerApprovalStatus in ['pending', 'approved', 'rejected'];
+    }
+
+    function isValidQuotationStatus(status) {
+      return status in ['draft', 'sent', 'approved', 'rejected'];
+    }
+
+    function isJobQuotationUpdate() {
+      return isAdminOrManager()
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'quotationAmount',
+          'quotationNote',
+          'quotationStatus',
+          'quotationSentAt',
+          'quotationApprovedAt',
+          'quotationRejectedAt',
+          'quotationApprovedBy',
+          'quotationApprovedByDisplayName',
+          'quotationRejectedReason',
+          'quotationProofUrl',
+          'customerApprovalStatus',
+          'status',
+          'statusHistory',
+          'updatedAt'
+        ])
+        && isValidQuotationStatus(request.resource.data.quotationStatus)
+        && request.resource.data.technicianId == resource.data.technicianId
+        && request.resource.data.technicianName == resource.data.technicianName
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.costProfile == resource.data.costProfile
+        && request.resource.data.requiredDocuments == resource.data.requiredDocuments
+        && request.resource.data.quotationAmount is number
+        && request.resource.data.quotationAmount >= 0
+        && (request.resource.data.quotationNote is string)
+        && (request.resource.data.quotationSentAt == null || request.resource.data.quotationSentAt is timestamp)
+        && (request.resource.data.quotationApprovedAt == null || request.resource.data.quotationApprovedAt is timestamp)
+        && (request.resource.data.quotationRejectedAt == null || request.resource.data.quotationRejectedAt is timestamp)
+        && (request.resource.data.quotationApprovedBy == null || request.resource.data.quotationApprovedBy == request.auth.uid)
+        && (request.resource.data.quotationApprovedByDisplayName == null || request.resource.data.quotationApprovedByDisplayName is string)
+        && (request.resource.data.quotationRejectedReason == null || request.resource.data.quotationRejectedReason is string)
+        && (request.resource.data.quotationProofUrl == null || request.resource.data.quotationProofUrl is string)
+        && (
+          request.resource.data.quotationStatus != 'approved'
+          || (
+            request.resource.data.quotationApprovedBy == request.auth.uid
+            && request.resource.data.quotationApprovedByDisplayName is string
+            && request.resource.data.quotationApprovedAt is timestamp
+            && request.resource.data.customerApprovalStatus == 'approved'
+          )
+        )
+        && (
+          request.resource.data.quotationStatus != 'rejected'
+          || (
+            request.resource.data.quotationRejectedAt is timestamp
+            && request.resource.data.quotationRejectedReason is string
+            && request.resource.data.quotationRejectedReason != ''
+            && request.resource.data.customerApprovalStatus == 'rejected'
+          )
+        )
+        && (
+          request.resource.data.quotationStatus != 'sent'
+          || request.resource.data.quotationSentAt is timestamp
+        );
+    }
+
+    function isJobQuotationAttachmentUpdate(jobId) {
+      return (
+          isAdmin()
+          || (isManager() && resource.data.branchId == currentUser().data.branchId)
+        )
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'quotationId',
+          'quotationNumber',
+          'quotationAmount',
+          'quotationStatus',
+          'quotationCreatedAt',
+          'quotationCreatedBy',
+          'updatedAt'
+        ])
+        && request.resource.data.quotationId is string
+        && request.resource.data.quotationId != ''
+        && request.resource.data.quotationNumber is string
+        && request.resource.data.quotationNumber.matches('^QT-[0-9]{6}$')
+        && request.resource.data.quotationAmount is number
+        && request.resource.data.quotationAmount >= 0
+        && request.resource.data.quotationStatus == 'draft'
+        && request.resource.data.quotationCreatedAt is timestamp
+        && request.resource.data.quotationCreatedBy == request.auth.uid
+        && exists(quotationPath(request.resource.data.quotationId))
+        && get(quotationPath(request.resource.data.quotationId)).data.jobId == jobId
+        && get(quotationPath(request.resource.data.quotationId)).data.branchId == resource.data.branchId
+        && get(quotationPath(request.resource.data.quotationId)).data.customerId == resource.data.customerId;
+    }
+
+    function isJobAssignmentUpdate() {
+      return isAdminOrManager()
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'technicianId',
+          'technicianName',
+          'updatedAt'
+        ])
+        && request.resource.data.technicianId is string
+        && request.resource.data.technicianId != ''
+        && request.resource.data.technicianName is string
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.costProfile == resource.data.costProfile
+        && request.resource.data.requiredDocuments == resource.data.requiredDocuments;
+    }
+
+    function isJobPublicTrackingUpdate() {
+      return (
+          (
+            (
+              isAdmin()
+              || (isManager() && resource.data.branchId == currentUser().data.branchId)
+            )
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+              'diagnosisSummaryPublic',
+              'repairSummaryPublic',
+              'estimatedCompletionAt',
+              'publicTrackingCode',
+              'publicTrackingCreatedAt',
+              'updatedAt'
+            ])
+            && request.resource.data.diagnosisSummaryPublic is string
+            && request.resource.data.repairSummaryPublic is string
+            && (request.resource.data.estimatedCompletionAt == null || request.resource.data.estimatedCompletionAt is timestamp)
+          )
+          || (
+            role() == 'technician'
+            && resource.data.technicianId == request.auth.uid
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+              'publicTrackingCode',
+              'publicTrackingCreatedAt',
+              'updatedAt'
+            ])
+            && request.resource.data.diff(resource.data).changedKeys().hasAll([
+              'publicTrackingCode',
+              'publicTrackingCreatedAt',
+              'updatedAt'
+            ])
+          )
+        )
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && (!('publicTrackingCode' in request.resource.data) || request.resource.data.publicTrackingCode is string)
+        && (!('publicTrackingCode' in request.resource.data) || request.resource.data.publicTrackingCode != '')
+        && (!('publicTrackingCreatedAt' in request.resource.data) || request.resource.data.publicTrackingCreatedAt is timestamp);
+    }
+
+    function isJobSheetConsentTokenUpdate() {
+      return (
+          isAdmin()
+          || (
+            isManager()
+            && resource.data.branchId == currentUser().data.branchId
+          )
+          || (role() == 'technician' && resource.data.technicianId == request.auth.uid)
+        )
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'jobSheetConsentToken',
+          'jobSheetConsentTokenCreatedAt',
+          'jobSheetConsentStatus',
+          'updatedAt'
+        ])
+        && request.resource.data.jobSheetConsentToken is string
+        && request.resource.data.jobSheetConsentToken != ''
+        && request.resource.data.jobSheetConsentTokenCreatedAt is timestamp
+        && request.resource.data.jobSheetConsentStatus == 'pending';
+    }
+
+    function isJobSheetManualConsentUpdate() {
+      return isAdminOrManager()
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'jobSheetConsentStatus',
+          'jobSheetSignedAt',
+          'jobSheetSignedBy',
+          'jobSheetConsentMethod',
+          'jobSheetManualConsent',
+          'jobSheetManualConsentName',
+          'jobSheetManualConsentPhone',
+          'jobSheetManualConsentNotes',
+          'jobSheetTermsAccepted',
+          'consentCompleted',
+          'jobSheetSigner',
+          'jobSheetConsentChecklist',
+          'jobSheetConsentSnapshot',
+          'updatedAt'
+        ])
+        && request.resource.data.jobSheetConsentStatus == 'signed'
+        && request.resource.data.jobSheetSignedAt is timestamp
+        && request.resource.data.jobSheetSignedBy == request.auth.uid
+        && request.resource.data.jobSheetConsentMethod is string
+        && request.resource.data.jobSheetConsentMethod != ''
+        && request.resource.data.jobSheetManualConsent == true
+        && request.resource.data.jobSheetManualConsentName is string
+        && request.resource.data.jobSheetManualConsentName != ''
+        && request.resource.data.jobSheetManualConsentPhone is string
+        && request.resource.data.jobSheetManualConsentPhone != ''
+        && request.resource.data.jobSheetTermsAccepted == true
+        && request.resource.data.consentCompleted == true
+        && request.resource.data.jobSheetSigner is map
+        && request.resource.data.jobSheetConsentChecklist is map
+        && request.resource.data.jobSheetConsentSnapshot is map;
+    }
+
+    function isValidDocumentExtraction(extractionId) {
+      return request.resource.data.documentId == extractionId
+        && request.resource.data.jobId is string
+        && isValidJobDocumentType(request.resource.data.documentType)
+        && request.resource.data.extractedData is map
+        && request.resource.data.extractedData.inferredType in [
+          'checklist',
+          'supplier_receipt',
+          'logistic_receipt',
+          'invoice',
+          'payment_receipt',
+          'photo'
+        ]
+        && request.resource.data.status in ['draft', 'verified']
+        && request.resource.data.verified is bool;
+    }
+
+    function hasValidNoticeCore(data) {
+      return data.title is string
+        && data.title != ''
+        && data.message is string
+        && data.message != ''
+        && data.type in ['warning', 'reminder', 'meeting', 'announcement']
+        && data.targetType in ['individual', 'broadcast']
+        && data.targetUserIds is list
+        && (
+          data.targetType == 'broadcast'
+          || data.targetUserIds.size() > 0
+        )
+        && data.createdBy is string
+        && data.createdAt is timestamp
+        && data.priority in ['low', 'normal', 'high']
+        && data.status == 'active'
+        && (!('isDeleted' in data) || data.isDeleted is bool)
+        && (!('deletedAt' in data) || data.deletedAt is timestamp)
+        && (!('deletedBy' in data) || data.deletedBy is string)
+        && (!('deletedByName' in data) || data.deletedByName is string)
+        && (!('deleteReason' in data) || data.deleteReason is string)
+        && (!('restoredAt' in data) || data.restoredAt is timestamp)
+        && (!('restoredBy' in data) || data.restoredBy is string);
+    }
+
+    function hasValidNoticeCreate(data) {
+      return hasValidNoticeCore(data) && data.createdBy == request.auth.uid;
+    }
+
+    function canReadNotice() {
+      return isAdminOrManager()
+        || (
+          signedIn()
+          && role() == 'technician'
+          && resource.data.status == 'active'
+          && (!('isDeleted' in resource.data) || resource.data.isDeleted != true)
+          && (
+            resource.data.targetType == 'broadcast'
+            || request.auth.uid in resource.data.targetUserIds
+          )
+        );
+    }
+
+    function isOwnNoticeRead(readId) {
+      return signedIn()
+        && resource.data.userId == request.auth.uid;
+    }
+
+    function hasValidNoticeReadCreate(readId) {
+      return signedIn()
+        && request.resource.data.noticeId is string
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.readAt is timestamp
+        && readId == request.resource.data.noticeId + '_' + request.auth.uid;
+    }
+
+    function hasValidBranchChatCreate(data) {
+      return signedIn()
+        && data.senderId == request.auth.uid
+        && data.message is string
+        && data.message != ''
+        && data.senderDisplayName is string
+        && data.senderRole in ['admin', 'manager', 'technician']
+        && data.senderBranch in ['cyberjaya', 'bangi']
+        && data.createdAt == request.time;
+    }
+
+    function isOwnBranchChatRead(chatReadId) {
+      return signedIn() && chatReadId == request.auth.uid;
+    }
+
+    function hasValidBranchChatRead(data, chatReadId) {
+      return isOwnBranchChatRead(chatReadId)
+        && data.userId == request.auth.uid
+        && data.lastReadAt is timestamp;
+    }
+
+    function hasValidPartnerJobCore(data) {
+      return data.geniusJobSheetNo is string
+        && data.geniusJobSheetNo != ''
+        && data.partnerName is string
+        && data.partnerName != ''
+        && data.partnerJobSheetNo is string
+        && data.partnerJobSheetNo != ''
+        && data.outsourceType in ['motherboard_repair', 'data_recovery']
+        && data.customerName is string
+        && data.customerName != ''
+        && data.deviceBrand is string
+        && data.deviceModel is string
+        && data.deviceModel != ''
+        && data.deviceSerial is string
+        && data.issueDescription is string
+        && data.issueDescription != ''
+        && data.sentDate is timestamp
+        && (data.expectedReturnDate == null || data.expectedReturnDate is timestamp)
+        && data.status in ['sent', 'in_progress', 'waiting_parts', 'completed', 'returned', 'cancelled']
+        && data.remarks is string
+        && hasValidPartnerHardwareChecklist(data)
+        && data.updatedAt is timestamp;
+    }
+
+    function isMotherboardPartnerJobData(data) {
+      return data.outsourceType == 'motherboard_repair'
+        || data.partnerName in ['QH Tech (motherboard)', 'Shah (motherboard)'];
+    }
+
+    function hasValidHardwareChecklistPart(part) {
+      return part.included is bool
+        && part.notes is string
+        && (
+          (
+            part.included == true
+            && part.unitCount is number
+            && part.unitCount >= 1
+            && part.capacity is string
+            && part.capacity != ''
+            && part.type is string
+            && part.type != ''
+          )
+          ||
+          (
+            part.included == false
+            && part.unitCount == null
+            && part.capacity is string
+            && part.type is string
+          )
+        );
+    }
+
+    function hasValidHardwareChecklistWifiCard(wifiCard) {
+      return wifiCard.included is bool
+        && wifiCard.model is string
+        && wifiCard.notes is string;
+    }
+
+    function hasCompletePartnerHardwareChecklist(data) {
+      return 'hardwareChecklist' in data
+        && data.hardwareChecklist.ram is map
+        && data.hardwareChecklist.ssd is map
+        && data.hardwareChecklist.hdd is map
+        && data.hardwareChecklist.wifiCard is map
+        && hasValidHardwareChecklistPart(data.hardwareChecklist.ram)
+        && hasValidHardwareChecklistPart(data.hardwareChecklist.ssd)
+        && hasValidHardwareChecklistPart(data.hardwareChecklist.hdd)
+        && hasValidHardwareChecklistWifiCard(data.hardwareChecklist.wifiCard)
+        && data.hardwareChecklist.otherRemarks is string
+        && data.hardwareChecklist.checkedBy is string
+        && data.hardwareChecklist.checkedBy != ''
+        && data.hardwareChecklist.checkedAt is timestamp
+        && data.hardwareChecklistSummary is string
+        && data.hardwareChecklistSummary != '';
+    }
+
+    function hasValidPartnerHardwareChecklist(data) {
+      return isMotherboardPartnerJobData(data)
+        ? hasCompletePartnerHardwareChecklist(data)
+        : (!('hardwareChecklist' in data) || hasCompletePartnerHardwareChecklist(data));
+    }
+
+    function hasValidPartnerJobCreate(data) {
+      return hasValidPartnerJobCore(data)
+        && data.createdBy == request.auth.uid
+        && data.createdByDisplayName is string
+        && data.createdAt is timestamp;
+    }
+
+    function hasValidPartnerJobUpdate() {
+      return hasValidPartnerJobCore(request.resource.data)
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdByDisplayName == resource.data.createdByDisplayName
+        && request.resource.data.createdAt == resource.data.createdAt;
+    }
+
+    function hasValidCustomerCore(data) {
+      return data.fullName is string
+        && data.fullName != ''
+        && (!('customerNumber' in data) || (data.customerNumber is string && data.customerNumber.matches('^RIGX-[0-9]{6}$')))
+        && data.phone is string
+        && data.phone != ''
+        && (!('normalizedPhone' in data) || data.normalizedPhone is string)
+        && data.email is string
+        && data.address is string
+        && data.branch in ['cyberjaya', 'bangi', 'unknown']
+        && (!('isDeleted' in data) || data.isDeleted is bool)
+        && (!('deletedAt' in data) || data.deletedAt is timestamp)
+        && (!('deletedBy' in data) || data.deletedBy is string)
+        && (!('deletedByName' in data) || data.deletedByName is string)
+        && (!('deleteReason' in data) || data.deleteReason is string)
+        && (!('restoredAt' in data) || data.restoredAt is timestamp)
+        && (!('restoredBy' in data) || data.restoredBy is string)
+        && data.updatedAt is timestamp;
+    }
+
+    function hasValidCustomerCreate(data) {
+      return hasValidCustomerCore(data)
+        && data.createdBy == request.auth.uid
+        && data.createdByDisplayName is string
+        && data.createdAt is timestamp;
+    }
+
+    function hasValidCustomerUpdate() {
+      return hasValidCustomerCore(request.resource.data)
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdByDisplayName == resource.data.createdByDisplayName
+        && request.resource.data.createdAt == resource.data.createdAt;
+    }
+
+    function isOwnBranchCustomer(data) {
+      return branchMatchesCurrentUser(data.branch);
+    }
+
+    function canCreateCustomerForRole(data) {
+      return isAdmin()
+        || (isManager() && isOwnBranchCustomer(data))
+        || (role() == 'technician' && canCreateTechnicianJobCustomer(data));
+    }
+
+    function canCreateTechnicianJobCustomer(data) {
+      return isOwnBranchCustomer(data)
+        && data.createdBy == request.auth.uid
+        && data.customerNumber is string
+        && data.customerNumber.matches('^RIGX-[0-9]{6}$');
+    }
+
+    function isCustomerJobFlowUpdate() {
+      return signedIn()
+        && (isAdmin() || ((isManager() || role() == 'technician') && isOwnBranchCustomer(resource.data) && isOwnBranchCustomer(request.resource.data)))
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdByDisplayName == resource.data.createdByDisplayName
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'customerNumber',
+          'fullName',
+          'phone',
+          'normalizedPhone',
+          'email',
+          'address',
+          'branch',
+          'updatedAt'
+        ])
+        && (!('customerNumber' in resource.data) || request.resource.data.customerNumber == resource.data.customerNumber);
+    }
+
+    function isAssignedTechnicianQuotationSendUpdate() {
+      return isAssignedJobTechnician(resource.data.jobId)
+        && request.resource.data.jobId == resource.data.jobId
+        && request.resource.data.customerId == resource.data.customerId
+        && request.resource.data.customerName == resource.data.customerName
+        && request.resource.data.customerPhone == resource.data.customerPhone
+        && request.resource.data.branchId == resource.data.branchId
+        && request.resource.data.items == resource.data.items
+        && request.resource.data.subtotal == resource.data.subtotal
+        && request.resource.data.discountAmount == resource.data.discountAmount
+        && request.resource.data.total == resource.data.total
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.status in ['draft', 'sent']
+        && (!('quotationApprovalStatus' in request.resource.data) || request.resource.data.quotationApprovalStatus in ['draft', 'sent'])
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'status',
+          'quotationApprovalStatus',
+          'sentAt',
+          'quotationSentAt',
+          'publicToken',
+          'quotationApprovalToken',
+          'publicTokenCreatedAt',
+          'quotationApprovalTokenCreatedAt',
+          'publicTokenStatus',
+          'updatedAt'
+        ]);
+    }
+
+    function hasValidDeviceCore(data) {
+      return data.customerId is string
+        && data.customerId != ''
+        && data.customerName is string
+        && data.customerName != ''
+        && data.deviceType is string
+        && data.brand is string
+        && data.model is string
+        && data.model != ''
+        && data.serialNumber is string
+        && data.imei is string
+        && data.notes is string
+        && data.updatedAt is timestamp;
+    }
+
+    function hasValidDeviceCreate(data) {
+      return hasValidDeviceCore(data)
+        && data.createdBy == request.auth.uid
+        && data.createdByDisplayName is string
+        && data.createdAt is timestamp;
+    }
+
+    function hasValidDeviceUpdate() {
+      return hasValidDeviceCore(request.resource.data)
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdByDisplayName == resource.data.createdByDisplayName
+        && request.resource.data.createdAt == resource.data.createdAt;
+    }
+
+    function isValidPartCategory(category) {
+      return category in [
+        'screen',
+        'battery',
+        'keyboard',
+        'motherboard_component',
+        'charger',
+        'storage',
+        'ram',
+        'hinge',
+        'casing',
+        'other'
+      ];
+    }
+
+    function isValidPartsOrderStatus(status) {
+      return status in ['requested', 'approved', 'ordered', 'arrived', 'installed', 'cancelled'];
+    }
+
+    function hasValidPartsOrderCore(data) {
+      return data.jobId is string
+        && data.branchId is string
+        && data.jobSheetNo is string
+        && data.technicianId is string
+        && data.customerName is string
+        && data.deviceBrand is string
+        && data.deviceModel is string
+        && data.partName is string
+        && data.partName != ''
+        && isValidPartCategory(data.partCategory)
+        && data.partDescription is string
+        && data.supplierName is string
+        && data.supplierContact is string
+        && data.costPrice is number
+        && data.costPrice >= 0
+        && data.sellingPrice is number
+        && data.sellingPrice >= 0
+        && (data.approvedBy == null || data.approvedBy is string)
+        && (data.approvedByDisplayName == null || data.approvedByDisplayName is string)
+        && (data.orderedDate == null || data.orderedDate is timestamp)
+        && (data.etaDate == null || data.etaDate is timestamp)
+        && (data.arrivedDate == null || data.arrivedDate is timestamp)
+        && (data.installedDate == null || data.installedDate is timestamp)
+        && isValidPartsOrderStatus(data.status)
+        && data.remarks is string
+        && data.updatedAt is timestamp;
+    }
+
+    function hasValidPartsOrderCreate(data) {
+      return hasValidPartsOrderCore(data)
+        && exists(jobPath(data.jobId))
+        && data.branchId == get(jobPath(data.jobId)).data.branchId
+        && data.technicianId == get(jobPath(data.jobId)).data.technicianId
+        && data.requestedBy == request.auth.uid
+        && data.requestedByDisplayName is string
+        && data.createdAt is timestamp
+        && (
+          isAdminOrManager()
+          || (
+            role() == 'technician'
+            && data.technicianId == request.auth.uid
+            && data.status == 'requested'
+            && data.costPrice == 0
+            && data.sellingPrice == 0
+            && data.supplierName == ''
+            && data.supplierContact == ''
+            && data.approvedBy == null
+            && data.approvedByDisplayName == null
+          )
+        );
+    }
+
+    function hasValidPartsOrderUpdate() {
+      return hasValidPartsOrderCore(request.resource.data)
+        && request.resource.data.jobId == resource.data.jobId
+        && request.resource.data.branchId == resource.data.branchId
+        && request.resource.data.technicianId == resource.data.technicianId
+        && request.resource.data.requestedBy == resource.data.requestedBy
+        && request.resource.data.requestedByDisplayName == resource.data.requestedByDisplayName
+        && request.resource.data.createdAt == resource.data.createdAt
+        && (
+          isAdminOrManager()
+          || (
+            role() == 'technician'
+            && resource.data.technicianId == request.auth.uid
+            && resource.data.status == 'requested'
+            && request.resource.data.status == 'requested'
+            && request.resource.data.costPrice == resource.data.costPrice
+            && request.resource.data.sellingPrice == resource.data.sellingPrice
+            && request.resource.data.supplierName == resource.data.supplierName
+            && request.resource.data.supplierContact == resource.data.supplierContact
+            && request.resource.data.approvedBy == resource.data.approvedBy
+            && request.resource.data.approvedByDisplayName == resource.data.approvedByDisplayName
+          )
+        );
+    }
+
+    function isValidJobDocumentRecordType(type) {
+      return type in ['service_report', 'warranty', 'attachment'];
+    }
+
+    function isValidWarrantyPeriodType(type) {
+      return type in ['7_days', '1_month', '3_months', '6_months', '12_months'];
+    }
+
+    function hasValidJobDocumentRecordCore(data) {
+      return data.jobId is string
+        && data.jobSheetNo is string
+        && isValidJobDocumentRecordType(data.type)
+        && data.title is string
+        && data.title != ''
+        && data.description is string
+        && data.fileUrl is string
+        && data.fileName is string
+        && data.fileType is string
+        && (
+          data.fileType == ''
+          || data.fileType in ['image/jpeg', 'image/png', 'application/pdf']
+        )
+        && (
+          data.warrantyPeriodDays == null
+          || (data.warrantyPeriodDays is number && data.warrantyPeriodDays >= 0)
+        )
+        && (data.warrantyPeriodType == null || isValidWarrantyPeriodType(data.warrantyPeriodType))
+        && (data.warrantyStartDate == null || data.warrantyStartDate is timestamp)
+        && (data.warrantyEndDate == null || data.warrantyEndDate is timestamp)
+        && data.warrantyPolicyText is string
+        && (
+          data.warrantyClaimLimit == null
+          || data.warrantyClaimLimit == 'unlimited_within_period'
+        )
+        && data.updatedAt is timestamp;
+    }
+
+    function hasValidJobDocumentRecordCreate(data) {
+      return hasValidJobDocumentRecordCore(data)
+        && data.createdBy == request.auth.uid
+        && data.createdByDisplayName is string
+        && data.createdAt is timestamp
+        && (
+          isAdminOrManager()
+          || (
+            isAssignedJobTechnician(data.jobId)
+            && data.type in ['service_report', 'attachment']
+          )
+        )
+        && (
+          (
+            data.type == 'warranty'
+            && isValidWarrantyPeriodType(data.warrantyPeriodType)
+            && data.warrantyPeriodDays is number
+            && data.warrantyPeriodDays > 0
+            && data.warrantyStartDate is timestamp
+            && data.warrantyEndDate is timestamp
+            && data.warrantyEndDate > data.warrantyStartDate
+            && data.warrantyPolicyText != ''
+            && data.warrantyClaimLimit == 'unlimited_within_period'
+          )
+          || (
+            data.warrantyPeriodType == null
+            && data.warrantyPeriodDays == null
+            && data.warrantyStartDate == null
+            && data.warrantyEndDate == null
+            && data.warrantyClaimLimit == null
+          )
+        );
+    }
+
+    function hasValidJobDocumentRecordUpdate() {
+      return hasValidJobDocumentRecordCore(request.resource.data)
+        && request.resource.data.jobId == resource.data.jobId
+        && request.resource.data.jobSheetNo == resource.data.jobSheetNo
+        && request.resource.data.type == resource.data.type
+        && request.resource.data.fileUrl == resource.data.fileUrl
+        && request.resource.data.fileName == resource.data.fileName
+        && request.resource.data.fileType == resource.data.fileType
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdByDisplayName == resource.data.createdByDisplayName
+        && request.resource.data.createdAt == resource.data.createdAt
+        && (
+          request.resource.data.type != 'warranty'
+          || (
+            isValidWarrantyPeriodType(request.resource.data.warrantyPeriodType)
+            && request.resource.data.warrantyPeriodDays is number
+            && request.resource.data.warrantyPeriodDays > 0
+            && request.resource.data.warrantyStartDate is timestamp
+            && request.resource.data.warrantyEndDate is timestamp
+            && request.resource.data.warrantyEndDate > request.resource.data.warrantyStartDate
+            && request.resource.data.warrantyPolicyText != ''
+            && request.resource.data.warrantyClaimLimit == 'unlimited_within_period'
+          )
+        )
+        && (
+          isAdminOrManager()
+          || (
+            isAssignedJobTechnician(resource.data.jobId)
+            && resource.data.createdBy == request.auth.uid
+            && resource.data.type in ['service_report', 'attachment']
+            && request.resource.data.warrantyPeriodType == resource.data.warrantyPeriodType
+            && request.resource.data.warrantyPeriodDays == resource.data.warrantyPeriodDays
+            && request.resource.data.warrantyStartDate == resource.data.warrantyStartDate
+            && request.resource.data.warrantyEndDate == resource.data.warrantyEndDate
+            && request.resource.data.warrantyPolicyText == resource.data.warrantyPolicyText
+            && request.resource.data.warrantyClaimLimit == resource.data.warrantyClaimLimit
+          )
+        );
+    }
+
+    function isValidJobPaymentType(type) {
+      return type in ['deposit', 'partial', 'full_payment', 'refund', 'discount'];
+    }
+
+    function isValidJobPaymentMethod(method) {
+      return method in ['cash', 'bank_transfer', 'card', 'ewallet', 'other'];
+    }
+
+    function hasValidJobPaymentCore(data) {
+      return data.jobId is string
+        && data.jobSheetNo is string
+        && data.customerName is string
+        && data.amount is number
+        && data.amount > 0
+        && isValidJobPaymentType(data.type)
+        && isValidJobPaymentMethod(data.method)
+        && data.referenceNo is string
+        && (data.receiptUrl == null || data.receiptUrl is string)
+        && data.receivedBy is string
+        && data.receivedByDisplayName is string
+        && data.note is string
+        && data.paidAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function hasValidJobPaymentCreate(data) {
+      return isAdminOrManager()
+        && hasValidJobPaymentCore(data)
+        && data.receivedBy == request.auth.uid
+        && data.createdAt is timestamp;
+    }
+
+    function hasValidJobPaymentUpdate() {
+      return isAdminOrManager()
+        && hasValidJobPaymentCore(request.resource.data)
+        && request.resource.data.jobId == resource.data.jobId
+        && request.resource.data.jobSheetNo == resource.data.jobSheetNo
+        && request.resource.data.customerName == resource.data.customerName
+        && request.resource.data.receivedBy == resource.data.receivedBy
+        && request.resource.data.receivedByDisplayName == resource.data.receivedByDisplayName
+        && request.resource.data.createdAt == resource.data.createdAt;
+    }
+
+    function isValidWarrantyClaimType(type) {
+      return type in ['repair_issue', 'part_failure', 'other'];
+    }
+
+    function isValidWarrantyClaimStatus(status) {
+      return status in ['created', 'inspection', 'approved', 'rejected', 'in_repair', 'completed'];
+    }
+
+    function hasValidWarrantyClaimCore(data) {
+      return data.originalJobId is string
+        && data.originalJobSheetNo is string
+        && data.warrantyDocumentId is string
+        && (data.warrantyStartDate == null || data.warrantyStartDate is timestamp)
+        && data.warrantyEndDate is timestamp
+        && data.technicianId is string
+        && data.branchId is string
+        && data.customerName is string
+        && data.deviceBrand is string
+        && data.deviceModel is string
+        && data.claimReason is string
+        && data.claimReason != ''
+        && isValidWarrantyClaimType(data.claimType)
+        && isValidWarrantyClaimStatus(data.status)
+        && data.inspectionNote is string
+        && data.decisionNote is string
+        && data.handledBy is string
+        && data.handledByDisplayName is string
+        && data.statusHistory is list
+        && data.updatedAt is timestamp;
+    }
+
+    function hasActiveWarrantyReference(data) {
+      return exists(jobPath(data.originalJobId))
+        && exists(jobDocumentRecordPath(data.warrantyDocumentId))
+        && get(jobDocumentRecordPath(data.warrantyDocumentId)).data.jobId == data.originalJobId
+        && get(jobDocumentRecordPath(data.warrantyDocumentId)).data.type == 'warranty'
+        && get(jobDocumentRecordPath(data.warrantyDocumentId)).data.warrantyEndDate is timestamp
+        && get(jobDocumentRecordPath(data.warrantyDocumentId)).data.warrantyEndDate > request.time;
+    }
+
+    function hasValidWarrantyClaimCreate(data) {
+      return isAdminOrManager()
+        && hasValidWarrantyClaimCore(data)
+        && hasActiveWarrantyReference(data)
+        && data.status == 'created'
+        && data.technicianId == get(jobPath(data.originalJobId)).data.technicianId
+        && data.handledBy == request.auth.uid
+        && data.createdAt is timestamp;
+    }
+
+    function isWarrantyClaimBaseUnchanged() {
+      return request.resource.data.originalJobId == resource.data.originalJobId
+        && request.resource.data.originalJobSheetNo == resource.data.originalJobSheetNo
+        && request.resource.data.warrantyDocumentId == resource.data.warrantyDocumentId
+        && request.resource.data.warrantyStartDate == resource.data.warrantyStartDate
+        && request.resource.data.warrantyEndDate == resource.data.warrantyEndDate
+        && request.resource.data.technicianId == resource.data.technicianId
+        && request.resource.data.branchId == resource.data.branchId
+        && request.resource.data.customerName == resource.data.customerName
+        && request.resource.data.deviceBrand == resource.data.deviceBrand
+        && request.resource.data.deviceModel == resource.data.deviceModel
+        && request.resource.data.claimReason == resource.data.claimReason
+        && request.resource.data.claimType == resource.data.claimType
+        && request.resource.data.createdAt == resource.data.createdAt;
+    }
+
+    function isValidWarrantyClaimTransition() {
+      return (
+          resource.data.status == 'created'
+          && request.resource.data.status == 'inspection'
+        )
+        || (
+          resource.data.status == 'inspection'
+          && request.resource.data.status in ['approved', 'rejected']
+          && isAdminOrManager()
+        )
+        || (
+          resource.data.status == 'approved'
+          && request.resource.data.status == 'in_repair'
+        )
+        || (
+          resource.data.status == 'in_repair'
+          && request.resource.data.status == 'completed'
+        );
+    }
+
+    function hasValidWarrantyClaimUpdate() {
+      return hasValidWarrantyClaimCore(request.resource.data)
+        && isWarrantyClaimBaseUnchanged()
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'status',
+          'inspectionNote',
+          'decisionNote',
+          'handledBy',
+          'handledByDisplayName',
+          'statusHistory',
+          'updatedAt'
+        ])
+        && isValidWarrantyClaimTransition()
+        && request.resource.data.handledBy == request.auth.uid
+        && (
+          isAdminOrManager()
+          || (
+            role() == 'technician'
+            && resource.data.technicianId == request.auth.uid
+            && request.resource.data.status in ['inspection', 'in_repair', 'completed']
+          )
+        )
+        && (
+          request.resource.data.status != 'rejected'
+          || request.resource.data.decisionNote != ''
+        );
+    }
+
+    function hasValidPosWarrantyClaimStatus(status) {
+      return status in ['open', 'checking', 'approved', 'rejected', 'completed'];
+    }
+
+    function hasActivePosWarrantyReference(data) {
+      return exists(/databases/$(database)/documents/warranties/$(data.warrantyId))
+        && get(/databases/$(database)/documents/warranties/$(data.warrantyId)).data.invoiceId == data.invoiceId
+        && get(/databases/$(database)/documents/warranties/$(data.warrantyId)).data.endDate is timestamp
+        && get(/databases/$(database)/documents/warranties/$(data.warrantyId)).data.endDate > request.time;
+    }
+
+    function hasValidPosWarrantyClaimCreate(data) {
+      return isAdminOrManager()
+        && data.claimNo is string
+        && data.warrantyId is string
+        && data.invoiceId is string
+        && data.customerId is string
+        && data.customerName is string
+        && data.customerPhone is string
+        && data.branchId is string
+        && data.itemName is string
+        && data.claimReason is string
+        && data.claimReason != ''
+        && hasValidPosWarrantyClaimStatus(data.status)
+        && data.status == 'open'
+        && data.createdBy == request.auth.uid
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && hasActivePosWarrantyReference(data);
+    }
+
+    function hasValidPosWarrantyClaimUpdate() {
+      return isAdminOrManager()
+        && hasValidPosWarrantyClaimStatus(request.resource.data.status)
+        && request.resource.data.warrantyId == resource.data.warrantyId
+        && request.resource.data.invoiceId == resource.data.invoiceId
+        && request.resource.data.customerId == resource.data.customerId
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(['status', 'updatedAt'])
+        && request.resource.data.updatedAt is timestamp;
+    }
+
+    function isJobPaymentSummaryUpdate() {
+      return isAdminOrManager()
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'paymentStatus',
+          'totalAmountDue',
+          'totalPaid',
+          'balanceDue',
+          'discountAmount',
+          'refundAmount',
+          'lastPaymentAt',
+          'updatedAt'
+        ])
+        && request.resource.data.paymentStatus in ['unpaid', 'deposit_paid', 'partial_paid', 'paid', 'refunded']
+        && request.resource.data.totalAmountDue is number
+        && request.resource.data.totalPaid is number
+        && request.resource.data.balanceDue is number
+        && request.resource.data.discountAmount is number
+        && request.resource.data.refundAmount is number
+        && (request.resource.data.lastPaymentAt == null || request.resource.data.lastPaymentAt is timestamp);
+    }
+
+    function hasValidAuditLogCreate(data) {
+      return data.keys().hasOnly([
+          'entityType',
+          'entityId',
+          'action',
+          'changedBy',
+          'changedByDisplayName',
+          'changes',
+          'note',
+          'createdAt'
+        ])
+        && data.entityType in ['job', 'payroll', 'leave', 'partner_job', 'customer', 'device', 'parts_order', 'payment', 'warranty_claim', 'schedule', 'notice', 'pos', 'device_checklist']
+        && data.entityId is string
+        && data.entityId != ''
+        && data.action in [
+          'create',
+          'update',
+          'delete',
+          'customer_deleted',
+          'customer_restored',
+          'notice_deleted',
+          'notice_restored',
+          'leave_mc_uploaded',
+          'status_change',
+          'quotation_updated',
+          'quotation_sent',
+          'quotation_approved',
+          'quotation_rejected',
+          'quotation_sent_whatsapp',
+          'quotation_approved_public',
+          'quotation_rejected_public',
+          'job_number_generated',
+          'job_number_corrected',
+          'public_repair_tracking_viewed',
+          'job_tracking_code_generated',
+          'job_public_update_changed',
+          'job_tracking_message_sent',
+          'job_ready_for_pickup_whatsapp_sent',
+          'job_sheet_consent_token_created',
+          'job_sheet_manual_consent_recorded',
+          'job_sheet_customer_signed',
+          'device_checklist_imported_customer',
+          'device_checklist_imported_device',
+          'device_checklist_sent_whatsapp',
+          'device_checklist_signature_overridden',
+          'job_lifecycle_status_changed',
+          'job_lifecycle_override_used',
+          'job_cancelled',
+          'job_delivered',
+          'warranty_activated',
+          'warranty_expired',
+          'payment_created',
+          'payment_updated',
+          'payment_deleted',
+          'warranty_claim_created',
+          'warranty_claim_inspection_updated',
+          'warranty_claim_approved',
+          'warranty_claim_rejected',
+          'warranty_claim_completed',
+          'schedule_created',
+          'schedule_done',
+          'schedule_cancelled',
+          'pos_price_item_created',
+          'pos_price_item_updated',
+          'pos_quotation_created',
+          'pos_quotation_sent',
+          'pos_quotation_approved',
+          'pos_quotation_rejected',
+          'pos_quotation_expired',
+          'pos_quotation_converted_to_invoice',
+          'pos_invoice_created',
+          'pos_invoice_voided',
+          'pos_payment_recorded',
+          'pos_payment_reversed',
+          'pos_refund_created',
+          'pos_warranty_activated_from_invoice',
+          'pos_warranty_claim_created',
+          'pos_warranty_claim_status_updated',
+          'pos_commission_prepared',
+          'pos_inventory_movement_prepared',
+          'pos_commission_approved',
+          'pos_commission_rejected',
+          'pos_commission_amount_updated',
+          'pos_inventory_movement_approved',
+          'pos_inventory_movement_rejected',
+          'pos_inventory_movement_applied',
+          'pos_commission_rule_created',
+          'pos_commission_rule_updated',
+          'pos_commission_rule_deactivated',
+          'pos_commission_rule_activated',
+          'pos_commission_linked_to_payroll',
+          'pos_commission_marked_paid',
+          'pos_inventory_stock_ledger_created',
+          'inventory_manual_adjustment_created',
+          'inventory_stock_received',
+          'inventory_correction_created',
+          'pos_quotation_public_token_created',
+          'pos_quotation_customer_viewed',
+          'pos_quotation_customer_approved',
+          'pos_quotation_customer_rejected',
+          'pos_invoice_payment_token_created',
+          'warranty_terms_token_created',
+          'warranty_terms_sent_whatsapp',
+          'warranty_terms_signed',
+          'pos_payment_submission_created',
+          'pos_payment_submission_approved',
+          'pos_payment_submission_rejected',
+          'pos_quotation_public_token_regenerated',
+          'pos_quotation_public_token_revoked',
+          'pos_invoice_payment_token_regenerated',
+          'pos_invoice_payment_token_revoked',
+          'pos_invoice_payment_page_viewed',
+          'pos_ai_pricelist_import_created',
+          'pos_ai_pricelist_import_parsed',
+          'pos_ai_pricelist_import_failed',
+          'pos_ai_pricelist_item_approved',
+          'pos_ai_pricelist_item_updated_existing',
+          'pos_ai_pricelist_item_rejected',
+          'pos_whatsapp_message_sent',
+          'pos_whatsapp_message_failed',
+          'whatsapp_message_sent',
+          'whatsapp_message_failed',
+          'whatsapp_message_retry_sent',
+          'whatsapp_message_retry_failed',
+          'whatsapp_inbound_message_received',
+          'whatsapp_inbound_message_marked_read',
+          'whatsapp_inbound_message_archived',
+          'whatsapp_inbox_reply_sent',
+          'whatsapp_inbox_reply_failed',
+          'whatsapp_conversation_assigned',
+          'whatsapp_conversation_unassigned',
+          'whatsapp_conversation_status_updated',
+          'whatsapp_conversation_priority_updated',
+          'whatsapp_conversation_followup_set',
+          'whatsapp_conversation_note_added',
+          'whatsapp_conversation_customer_linked',
+          'whatsapp_conversation_customer_unlinked',
+          'whatsapp_conversation_customer_created',
+          'whatsapp_conversation_entity_linked',
+          'whatsapp_conversation_entity_unlinked'
+        ]
+        && data.changedBy == request.auth.uid
+        && data.changedByDisplayName is string
+        && data.changedByDisplayName != ''
+        && data.changes is list
+        && data.note is string
+        && data.createdAt is timestamp;
+    }
+
+    function canCreateAuditLog(data) {
+      return hasValidAuditLogCreate(data)
+        && (
+          isAdminOrManager()
+          || (
+            data.entityType == 'job'
+            && exists(jobPath(data.entityId))
+            && get(jobPath(data.entityId)).data.technicianId == request.auth.uid
+          )
+          || (
+            data.entityType == 'leave'
+            && exists(/databases/$(database)/documents/leaves/$(data.entityId))
+            && get(/databases/$(database)/documents/leaves/$(data.entityId)).data.technicianId == request.auth.uid
+          )
+          || (
+            data.entityType == 'parts_order'
+            && exists(partsOrderPath(data.entityId))
+            && get(partsOrderPath(data.entityId)).data.technicianId == request.auth.uid
+          )
+          || (
+            data.entityType == 'pos'
+            && exists(quotationPath(data.entityId))
+            && isAssignedJobTechnician(get(quotationPath(data.entityId)).data.jobId)
+          )
+          || (
+            data.entityType == 'warranty_claim'
+            && exists(warrantyClaimPath(data.entityId))
+            && get(warrantyClaimPath(data.entityId)).data.technicianId == request.auth.uid
+          )
+          || (
+            data.entityType == 'schedule'
+            && exists(/databases/$(database)/documents/schedules/$(data.entityId))
+            && get(/databases/$(database)/documents/schedules/$(data.entityId)).data.createdBy == request.auth.uid
+          )
+          || (
+            data.entityType == 'device_checklist'
+            && exists(/databases/$(database)/documents/deviceChecklists/$(data.entityId))
+            && canAccessDeviceChecklist(get(/databases/$(database)/documents/deviceChecklists/$(data.entityId)).data)
+          )
+        );
+    }
+
+    function hasValidAccountReport(data) {
+      return data.month is string
+        && data.month != ''
+        && data.branch in ['all', 'bangi', 'cyberjaya']
+        && data.generatedAt is timestamp
+        && data.generatedBy == request.auth.uid
+        && data.summary is map
+        && data.paymentSummary is map
+        && data.branchBreakdown is list
+        && data.technicianBreakdown is list;
+    }
+
+    function hasValidExpense(data) {
+      return data.title is string
+        && data.title != ''
+        && data.category in ['rent', 'utilities', 'software', 'tools', 'courier', 'marketing_ads', 'salary_adjustment', 'misc']
+        && data.amount is number
+        && data.amount >= 0
+        && data.branch in ['bangi', 'cyberjaya']
+        && data.expenseDate is timestamp
+        && data.paymentMethod in ['cash', 'bank_transfer', 'card', 'ewallet', 'other']
+        && data.notes is string
+        && data.createdAt is timestamp
+        && data.createdBy == request.auth.uid;
+    }
+
+    function isValidPosPaymentMethod(method) {
+      return method in ['cash', 'bank_transfer', 'card', 'ewallet', 'duitnow', 'other'];
+    }
+
+    function isValidScheduleRole(value) {
+      return value in ['admin', 'manager', 'technician'];
+    }
+
+    function isValidScheduleBranch(value) {
+      return value in ['all', 'bangi', 'cyberjaya'];
+    }
+
+    function isValidScheduleTarget(data) {
+      return (
+          data.targetType == 'all'
+          && (!('targetRole' in data) || data.targetRole == '')
+          && (!('targetUserId' in data) || data.targetUserId == '')
+        )
+        || (
+          data.targetType == 'role'
+          && isValidScheduleRole(data.targetRole)
+          && (!('targetUserId' in data) || data.targetUserId == '')
+        )
+        || (
+          data.targetType == 'user'
+          && data.targetUserId is string
+          && data.targetUserId != ''
+          && (!('targetRole' in data) || data.targetRole == '')
+        );
+    }
+
+    function hasValidScheduleCore(data) {
+      return data.title is string
+        && data.title != ''
+        && data.scheduleDate is string
+        && data.branch in ['all', 'bangi', 'cyberjaya']
+        && data.createdBy is string
+        && data.createdByName is string
+        && isValidScheduleRole(data.createdByRole)
+        && data.targetType in ['all', 'role', 'user']
+        && isValidScheduleTarget(data)
+        && data.status in ['active', 'done', 'cancelled'];
+    }
+
+    function hasValidScheduleCreate(data) {
+      // TODO RBAC MISMATCH:
+      // Firestore rules cannot reliably validate "today or tomorrow" against a Kuala Lumpur YYYY-MM-DD string.
+      // The schedule service enforces this before writing.
+      return hasValidScheduleCore(data)
+        && data.createdBy == request.auth.uid
+        && data.createdByRole == role()
+        && data.status == 'active'
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function canReadSchedule(data) {
+      return signedIn()
+        && (
+          isAdminOrManager()
+          || data.createdBy == request.auth.uid
+          || data.targetType == 'all'
+          || (data.targetType == 'role' && data.targetRole == role())
+          || (data.targetType == 'user' && data.targetUserId == request.auth.uid)
+        );
+    }
+
+    function isOwnScheduleStatusUpdate() {
+      return signedIn()
+        && resource.data.createdBy == request.auth.uid
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(['status', 'updatedAt'])
+        && request.resource.data.status in ['done', 'cancelled']
+        && request.resource.data.updatedAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn() && (isAdminOrManager() || isOwner(userId));
+      allow create: if isAdmin()
+        && request.resource.data.uid == userId
+        && hasValidStaffProfile(request.resource.data);
+      allow update: if isAdmin() && hasValidStaffProfile(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /payroll/{payrollId} {
+      allow read: if isAdminOrManager() || isOwnPayrollDoc(payrollId);
+
+      allow create: if isAdminOrManager()
+        && requestPayrollStatus() == 'draft'
+        && request.resource.data.payrollId == payrollId
+        && request.resource.data.technicianId is string
+        && request.resource.data.month is string
+        && request.resource.data.generatedBy == request.auth.uid
+        && payrollMonthIsOpen(request.resource.data.month);
+
+      allow update: if isAdminOrManager()
+        && payrollMonthIsOpen(resource.data.month)
+        && isValidPayrollStatus(requestPayrollStatus())
+        && (
+          (
+            payrollStatus() == 'draft'
+            && requestPayrollStatus() == 'draft'
+            && request.resource.data.technicianId == resource.data.technicianId
+            && request.resource.data.month == resource.data.month
+          )
+          ||
+          (
+            payrollStatus() == 'draft'
+            && requestPayrollStatus() == 'approved'
+            && request.resource.data.approvedBy == request.auth.uid
+          )
+          ||
+          (
+            payrollStatus() == 'approved'
+            && requestPayrollStatus() == 'paid'
+            && request.resource.data.paidBy == request.auth.uid
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    match /payroll_adjustments/{adjustmentId} {
+      allow read: if isAdminOrManager() || isOwner(resource.data.technicianId);
+      allow create: if isAdminOrManager()
+        && hasValidAdjustmentFields(request.resource.data)
+        && payrollMonthIsOpen(request.resource.data.month)
+        && adjustmentPayrollIsUnlocked(request.resource.data);
+      allow update: if isAdminOrManager()
+        && hasValidAdjustmentFields(request.resource.data)
+        && payrollMonthIsOpen(resource.data.month)
+        && request.resource.data.technicianId == resource.data.technicianId
+        && request.resource.data.month == resource.data.month
+        && request.resource.data.createdBy == resource.data.createdBy
+        && adjustmentPayrollIsUnlocked(resource.data);
+      allow delete: if false;
+    }
+
+    match /payroll_months/{monthId} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdmin() && hasValidPayrollMonthCreate(monthId);
+      allow update: if isAdmin()
+        && request.resource.data.month == monthId
+        && request.resource.data.status in ['open', 'closed']
+        && (
+          (
+            resource.data.status != 'closed'
+            && request.resource.data.status == 'closed'
+            && request.resource.data.closedBy == request.auth.uid
+            && request.resource.data.closedAt is timestamp
+          )
+          ||
+          (
+            resource.data.status == 'closed'
+            && request.resource.data.status == 'open'
+            && request.resource.data.reopenedBy == request.auth.uid
+            && request.resource.data.reopenedAt is timestamp
+            && request.resource.data.reopenReason is string
+            && request.resource.data.reopenReason != ''
+          )
+        );
+      allow delete: if false;
+    }
+
+    match /commissions/{commissionId} {
+      allow read: if isAdminOrManager() || isOwner(resource.data.technicianId);
+      allow create, update: if isAdminOrManager();
+      allow delete: if false;
+    }
+
+    match /attendance/{attendanceId} {
+      allow read: if isAdminOrManager() || isOwnAttendanceDoc(attendanceId) || isOwner(resource.data.userId);
+      allow create: if isOwnAttendanceCreate(attendanceId);
+      allow update: if (
+          isOwnAttendanceClockOutUpdate(attendanceId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'clockInBranchId',
+            'clockOutBranchId',
+            'clockOutDistance',
+            'isAutoDetected',
+            'crossBranchAttendance',
+            'transferDetected',
+            'totalHours',
+            'attendanceType',
+            'clockOut',
+            'status',
+            'updatedAt'
+          ])
+        )
+        || (
+          isManager()
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            'correctionNote',
+            'correctionUpdatedBy',
+            'correctionUpdatedAt',
+            'updatedAt'
+          ])
+          && request.resource.data.correctionUpdatedBy == request.auth.uid
+          && request.resource.data.correctionNote is string
+          && request.resource.data.correctionUpdatedAt is timestamp
+        )
+        || (
+          isAdmin()
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            'correctionNote',
+            'correctionUpdatedBy',
+            'correctionUpdatedAt',
+            'updatedAt'
+          ])
+          && request.resource.data.correctionUpdatedBy == request.auth.uid
+          && request.resource.data.correctionNote is string
+          && request.resource.data.correctionUpdatedAt is timestamp
+        )
+        || (
+          isAdmin()
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            'status',
+            'statusOverride',
+            'updatedAt'
+          ])
+          && isValidAttendanceStatus(request.resource.data.status)
+          && request.resource.data.statusOverride.overriddenBy == request.auth.uid
+          && request.resource.data.statusOverride.reason is string
+          && request.resource.data.statusOverride.overriddenAt is timestamp
+        );
+      allow delete: if false;
+    }
+
+    match /leaves/{leaveId} {
+      allow read: if isAdminOrManager() || isOwner(resource.data.technicianId);
+      allow create: if signedIn() && hasValidLeaveCreateFields(request.resource.data);
+      allow update: if (
+          isOwnPendingLeave()
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly(['status', 'cancelledAt'])
+          && request.resource.data.status == 'cancelled'
+          && request.resource.data.cancelledAt is timestamp
+        )
+        || (
+          isAdminOrManager()
+          && resource.data.status == 'pending'
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly(['status', 'approvedAt', 'approvedBy'])
+          && request.resource.data.status == 'approved'
+          && request.resource.data.approvedBy == request.auth.uid
+          && request.resource.data.approvedAt is timestamp
+        )
+        || (
+          isAdminOrManager()
+          && resource.data.status == 'pending'
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly(['status', 'rejectedAt', 'rejectedBy', 'rejectionReason'])
+          && request.resource.data.status == 'rejected'
+          && request.resource.data.rejectedBy == request.auth.uid
+          && request.resource.data.rejectedAt is timestamp
+          && request.resource.data.rejectionReason is string
+        );
+      allow delete: if false;
+    }
+
+    match /leaveEntitlements/{technicianId} {
+      allow read: if isAdminOrManager() || isOwner(technicianId);
+      allow create, update: if isAdminOrManager() && hasValidLeaveEntitlement(request.resource.data, technicianId);
+      allow delete: if false;
+    }
+
+    match /jobs/{jobId} {
+      allow read: if isAdminOrManager() || isAssignedJobResource();
+      allow create: if isTechnicianJobCreate(request.resource.data, jobId)
+        || isAdminManagerJobCreate(request.resource.data, jobId);
+      allow update: if isJobApprovalUpdate() || isJobCommissionUpdate() || isJobRequirementUpdate() || isJobLifecycleUpdate() || isJobDetailsUpdate() || isJobAssignmentUpdate() || isJobQuotationUpdate() || isJobQuotationAttachmentUpdate(jobId) || isJobPaymentSummaryUpdate() || isJobPublicTrackingUpdate() || isJobSheetConsentTokenUpdate() || isJobSheetManualConsentUpdate();
+      allow delete: if isAdmin();
+    }
+
+    match /systemCounters/{counterId} {
+      allow read: if isAdminOrManager() || (signedIn() && counterId.matches('^jobNumbers_[0-9]{4}$'));
+      allow create, update: if signedIn()
+        && counterId.matches('^jobNumbers_[0-9]{4}$')
+        && request.resource.data.year is number
+        && request.resource.data.prefix == 'RIGX'
+        && request.resource.data.lastNumber is number
+        && request.resource.data.lastNumber > 0
+        && request.resource.data.lastJobNo is string
+        && request.resource.data.lastJobNo.matches('^RIGX-[0-9]{6}$')
+        && request.resource.data.lastJobId is string
+        && existsAfter(/databases/$(database)/documents/jobNumberRegistry/$(request.resource.data.lastJobNo))
+        && getAfter(/databases/$(database)/documents/jobNumberRegistry/$(request.resource.data.lastJobNo)).data.jobId == request.resource.data.lastJobId
+        && getAfter(/databases/$(database)/documents/jobNumberRegistry/$(request.resource.data.lastJobNo)).data.runningNumber == request.resource.data.lastNumber
+        && request.resource.data.updatedAt is timestamp;
+      allow delete: if false;
+    }
+
+    match /counters/{counterId} {
+      allow read: if signedIn()
+        && counterId.matches('^(customerNumber|quotationNumber)_[0-9]{4}$');
+      allow create, update: if signedIn()
+        && counterId.matches('^(customerNumber|quotationNumber)_[0-9]{4}$')
+        && (
+          counterId.matches('^customerNumber_[0-9]{4}$')
+          || (counterId.matches('^quotationNumber_[0-9]{4}$') && isAdminOrManager())
+        )
+        && request.resource.data.year is number
+        && request.resource.data.prefix in ['RIGX', 'QT']
+        && request.resource.data.lastNumber is number
+        && request.resource.data.lastNumber > 0
+        && request.resource.data.lastPublicNumber is string
+        && (
+          (counterId.matches('^customerNumber_[0-9]{4}$') && request.resource.data.prefix == 'RIGX' && request.resource.data.lastPublicNumber.matches('^RIGX-[0-9]{6}$'))
+          || (counterId.matches('^quotationNumber_[0-9]{4}$') && request.resource.data.prefix == 'QT' && request.resource.data.lastPublicNumber.matches('^QT-[0-9]{6}$'))
+        )
+        && request.resource.data.updatedAt is timestamp;
+      allow delete: if false;
+    }
+
+    match /jobNumberRegistry/{jobNumber} {
+      allow read: if isAdminOrManager() || (signedIn() && jobNumber.matches('^RIGX-[0-9]{6}$'));
+      allow create: if signedIn()
+        && jobNumber.matches('^RIGX-[0-9]{6}$')
+        && request.resource.data.jobId is string
+        && request.resource.data.jobNo == jobNumber
+        && request.resource.data.year is number
+        && request.resource.data.runningNumber is number
+        && request.resource.data.runningNumber > 0
+        && request.resource.data.createdAt is timestamp
+        && existsAfter(jobPath(request.resource.data.jobId))
+        && getAfter(jobPath(request.resource.data.jobId)).data.jobNo == jobNumber
+        && getAfter(jobPath(request.resource.data.jobId)).data.jobNumber == jobNumber
+        && getAfter(jobPath(request.resource.data.jobId)).data.jobSheetNo == jobNumber
+        && getAfter(jobPath(request.resource.data.jobId)).data.createdBy == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /customers/{customerId} {
+      allow read: if isAdminOrManager()
+        || (role() == 'technician' && isOwnBranchCustomer(resource.data) && resource.data.isDeleted != true);
+      allow create: if hasValidCustomerCreate(request.resource.data) && canCreateCustomerForRole(request.resource.data);
+      allow update: if (
+          (isAdmin() || (isManager() && isOwnBranchCustomer(resource.data) && isOwnBranchCustomer(request.resource.data)))
+          && hasValidCustomerUpdate()
+        )
+        || (hasValidCustomerUpdate() && isCustomerJobFlowUpdate());
+      allow delete: if false;
+    }
+
+    match /devices/{deviceId} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager() && hasValidDeviceCreate(request.resource.data);
+      allow update: if isAdminOrManager() && hasValidDeviceUpdate();
+      allow delete: if false;
+    }
+
+    match /deviceChecklists/{checklistId} {
+      allow read: if canAccessDeviceChecklist(resource.data);
+      allow create: if isValidDeviceChecklistCreate(request.resource.data);
+      allow update: if isValidDeviceChecklistUpdate();
+      allow delete: if false;
+    }
+
+    match /partsOrders/{partsOrderId} {
+      allow read: if isAdmin()
+        || (
+          isManager()
+          && resource.data.branchId == currentUser().data.branchId
+        )
+        || (
+          signedIn()
+          && (
+            resource.data.technicianId == request.auth.uid
+            || isAssignedJobTechnician(resource.data.jobId)
+          )
+        );
+      allow create: if signedIn() && hasValidPartsOrderCreate(request.resource.data);
+      allow update: if signedIn() && hasValidPartsOrderUpdate();
+      allow delete: if isAdminOrManager();
+    }
+
+    match /jobDocuments/{documentId} {
+      allow read: if isAdminOrManager() || isAssignedJobTechnician(resource.data.jobId);
+      allow create: if signedIn() && hasValidJobDocumentRecordCreate(request.resource.data);
+      allow update: if signedIn() && hasValidJobDocumentRecordUpdate();
+      allow delete: if isAdminOrManager();
+    }
+
+    match /jobPayments/{paymentId} {
+      allow read: if isAdminOrManager() || isAssignedJobTechnician(resource.data.jobId);
+      allow create: if hasValidJobPaymentCreate(request.resource.data);
+      allow update: if hasValidJobPaymentUpdate();
+      allow delete: if false;
+    }
+
+    match /warrantyClaims/{claimId} {
+      allow read: if isAdminOrManager()
+        || (signedIn() && resource.data.technicianId == request.auth.uid)
+        || isAssignedJobTechnician(resource.data.originalJobId);
+      allow create: if hasValidWarrantyClaimCreate(request.resource.data) || hasValidPosWarrantyClaimCreate(request.resource.data);
+      allow update: if hasValidWarrantyClaimUpdate() || hasValidPosWarrantyClaimUpdate();
+      allow delete: if false;
+    }
+
+    match /documents/{documentId} {
+      allow read: if isAdminOrManager()
+        || isAssignedJobTechnician(resource.data.jobId)
+        || isOwner(resource.data.uploadedBy);
+      allow create: if isValidJobDocumentCreate(request.resource.data)
+        && (isAdminOrManager() || isAssignedJobTechnician(request.resource.data.jobId));
+      allow update: if isValidJobDocumentReview() || isValidJobDocumentRemoval();
+      allow delete: if false;
+    }
+
+    match /job_financials/{financialId} {
+      allow read: if isAdminOrManager() || isAssignedJobTechnician(financialId);
+      allow create, update: if isAdminOrManager() && isValidJobFinancialSnapshot(financialId);
+      allow delete: if false;
+    }
+
+    match /job_document_extractions/{extractionId} {
+      allow read: if isAdminOrManager() || isAssignedJobTechnician(resource.data.jobId);
+      allow create: if isAdminOrManager()
+        && isValidDocumentExtraction(extractionId)
+        && request.resource.data.status == 'draft'
+        && request.resource.data.verified == false
+        && request.resource.data.extractedBy == request.auth.uid
+        && request.resource.data.extractedAt is timestamp;
+      allow update: if isAdminOrManager()
+        && isValidDocumentExtraction(extractionId)
+        && request.resource.data.documentId == resource.data.documentId
+        && request.resource.data.jobId == resource.data.jobId
+        && request.resource.data.documentType == resource.data.documentType
+        && (
+          (
+            request.resource.data.status == 'draft'
+            && request.resource.data.verified == false
+            && request.resource.data.updatedBy == request.auth.uid
+          )
+          ||
+          (
+            request.resource.data.status == 'verified'
+            && request.resource.data.verified == true
+            && request.resource.data.verifiedBy == request.auth.uid
+            && request.resource.data.verifiedAt is timestamp
+          )
+        );
+      allow delete: if false;
+    }
+
+    match /notices/{noticeId} {
+      allow read: if canReadNotice();
+      allow create: if isAdminOrManager() && hasValidNoticeCreate(request.resource.data);
+      allow update: if isAdminOrManager()
+        && hasValidNoticeCore(request.resource.data)
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if false;
+    }
+
+    match /noticeReads/{readId} {
+      allow read: if isOwnNoticeRead(readId);
+      allow create: if hasValidNoticeReadCreate(readId);
+      allow update, delete: if false;
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isAdmin()
+        || (
+          isManager()
+          && resource.data.branchId is string
+          && resource.data.branchId == currentUser().data.branchId
+        )
+        || (
+          signedIn()
+          && resource.data.targetUserIds is list
+          && request.auth.uid in resource.data.targetUserIds
+        );
+      allow create: if isAdminOrManager()
+        && request.resource.data.title is string
+        && request.resource.data.message is string
+        && request.resource.data.type in [
+          'pos_quotation',
+          'pos_payment',
+          'warranty',
+          'inventory',
+          'commission',
+          'system',
+          'quotation_approved',
+          'quotation_rejected',
+          'quotation_manually_approved',
+          'job_sheet_signed',
+          'job_sheet_manually_recorded',
+          'device_checklist_signed',
+          'warranty_terms_signed',
+          'payment_proof_submitted'
+        ]
+        && request.resource.data.targetRoles is list
+        && request.resource.data.createdAt is timestamp;
+      allow update: if (
+          isAdmin()
+          || (
+            isManager()
+            && resource.data.branchId is string
+            && resource.data.branchId == currentUser().data.branchId
+          )
+          || (
+            signedIn()
+            && resource.data.targetUserIds is list
+            && request.auth.uid in resource.data.targetUserIds
+          )
+        )
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(['readBy'])
+        && request.resource.data.readBy is list;
+      allow delete: if false;
+    }
+
+    match /branchChats/{messageId} {
+      allow read: if signedIn();
+      allow create: if hasValidBranchChatCreate(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    match /branchChatReads/{chatReadId} {
+      allow read: if isOwnBranchChatRead(chatReadId);
+      allow create, update: if hasValidBranchChatRead(request.resource.data, chatReadId);
+      allow delete: if false;
+    }
+
+    match /schedules/{scheduleId} {
+      allow read: if canReadSchedule(resource.data);
+      allow create: if signedIn() && hasValidScheduleCreate(request.resource.data);
+      allow update: if (
+          isAdminOrManager()
+          && hasValidScheduleCore(request.resource.data)
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.updatedAt is timestamp
+        )
+        || isOwnScheduleStatusUpdate();
+      allow delete: if isAdminOrManager();
+    }
+
+    match /partnerJobs/{partnerJobId} {
+      allow read: if signedIn();
+      allow create: if isAdminOrManager()
+        && (isAdmin() || request.resource.data.branchId == currentUser().data.branchId)
+        && hasValidPartnerJobCreate(request.resource.data);
+      allow update: if isAdminOrManager()
+        && (isAdmin() || request.resource.data.branchId == currentUser().data.branchId)
+        && hasValidPartnerJobUpdate();
+      allow delete: if isAdminOrManager();
+    }
+
+    match /branches/{branchId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /audit_logs/{auditLogId} {
+      allow read: if isAdminOrManager() || isOwnPayslipAuditLog();
+      allow create: if signedIn()
+        && request.resource.data.actorId == request.auth.uid
+        && (
+          (isAdminOrManager() && isNonPayslipAuditLog() && hasRequiredPayrollAuditFields())
+          || (isAdminOrManager() && hasRequiredPayrollAuditFields())
+          || canCreatePayslipAuditLog()
+        )
+        && request.resource.data.action is string
+        && request.resource.data.targetCollection is string
+        && request.resource.data.targetId is string;
+      allow update, delete: if false;
+    }
+
+    match /auditLogs/{auditLogId} {
+      allow read: if isAdminOrManager();
+      allow create: if signedIn() && canCreateAuditLog(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    match /accountReports/{accountReportId} {
+      allow read: if isAdminOrManager();
+      allow create, update: if isAdminOrManager() && hasValidAccountReport(request.resource.data);
+      allow delete: if false;
+    }
+
+    match /expenses/{expenseId} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager() && hasValidExpense(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    match /priceItems/{priceItemId} {
+      allow read: if signedIn();
+      allow create, update: if isAdminOrManager()
+        && request.resource.data.name is string
+        && request.resource.data.category is string
+        && request.resource.data.type in ['service', 'part', 'package', 'diagnostic', 'labor']
+        && request.resource.data.basePrice is number
+        && request.resource.data.commissionEligible is bool
+        && request.resource.data.active is bool;
+      allow delete: if isAdmin();
+    }
+
+    match /quotations/{quotationId} {
+      allow read: if isAdminOrManager() || isAssignedJobTechnician(resource.data.jobId);
+      allow create, update: if isAdminOrManager()
+        && (
+          !('jobId' in request.resource.data)
+          || request.resource.data.jobId == ''
+          || (
+            exists(jobPath(request.resource.data.jobId))
+            && request.resource.data.branchId == get(jobPath(request.resource.data.jobId)).data.branchId
+            && request.resource.data.customerId == get(jobPath(request.resource.data.jobId)).data.customerId
+            && (isAdmin() || request.resource.data.branchId == currentUser().data.branchId)
+          )
+        )
+        && (!('quotationNumber' in request.resource.data) || (request.resource.data.quotationNumber is string && request.resource.data.quotationNumber.matches('^QT-[0-9]{6}$')))
+        && (!('customerNumber' in request.resource.data) || (request.resource.data.customerNumber is string && request.resource.data.customerNumber.matches('^RIGX-[0-9]{6}$')))
+        && (!('jobNumber' in request.resource.data) || (request.resource.data.jobNumber is string && request.resource.data.jobNumber.matches('^RIGX-[0-9]{6}$')))
+        && request.resource.data.customerId is string
+        && request.resource.data.customerName is string
+        && request.resource.data.customerPhone is string
+        && request.resource.data.branchId is string
+        && request.resource.data.items is list
+        && request.resource.data.subtotal is number
+        && request.resource.data.discountAmount is number
+        && request.resource.data.total is number
+        && request.resource.data.status in ['draft', 'sent', 'approved', 'rejected', 'expired'];
+      allow update: if isAssignedTechnicianQuotationSendUpdate();
+      allow delete: if false;
+    }
+
+    match /invoices/{invoiceId} {
+      allow read: if isAdminOrManager();
+      allow create, update: if isAdminOrManager()
+        && request.resource.data.invoiceNo is string
+        && request.resource.data.customerId is string
+        && request.resource.data.customerName is string
+        && request.resource.data.customerPhone is string
+        && request.resource.data.branchId is string
+        && request.resource.data.items is list
+        && request.resource.data.total is number
+        && request.resource.data.amountPaid is number
+        && request.resource.data.balance is number
+        && request.resource.data.paymentStatus in ['unpaid', 'partial', 'paid', 'refunded', 'void'];
+      allow delete: if false;
+    }
+
+    match /payments/{paymentId} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager()
+        && request.resource.data.invoiceId is string
+        && request.resource.data.branchId is string
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && isValidPosPaymentMethod(request.resource.data.method)
+        && request.resource.data.receivedBy == request.auth.uid
+        && (!('proofImageUrl' in request.resource.data) || request.resource.data.proofImageUrl is string);
+      allow update: if isAdminOrManager()
+        && request.resource.data.invoiceId == resource.data.invoiceId
+        && request.resource.data.branchId == resource.data.branchId
+        && request.resource.data.amount == resource.data.amount
+        && request.resource.data.method == resource.data.method
+        && request.resource.data.receivedBy == resource.data.receivedBy
+        && request.resource.data.receivedAt == resource.data.receivedAt
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(['status', 'reversedAt', 'reversedBy', 'reversalReason'])
+        && request.resource.data.status == 'reversed'
+        && request.resource.data.reversedBy == request.auth.uid
+        && request.resource.data.reversedAt is timestamp
+        && request.resource.data.reversalReason is string
+        && request.resource.data.reversalReason != '';
+      allow delete: if false;
+    }
+
+    match /paymentSubmissions/{submissionId} {
+      allow read: if isAdminOrManager();
+      allow create: if false;
+      allow update: if isAdminOrManager()
+        && request.resource.data.invoiceId == resource.data.invoiceId
+        && request.resource.data.amountClaimed == resource.data.amountClaimed
+        && request.resource.data.method == resource.data.method
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.status in ['approved', 'rejected']
+        && request.resource.data.reviewedBy == request.auth.uid
+        && request.resource.data.reviewedAt is timestamp
+        && (
+          request.resource.data.status == 'approved'
+          || (
+            request.resource.data.status == 'rejected'
+            && request.resource.data.rejectionReason is string
+            && request.resource.data.rejectionReason != ''
+          )
+        );
+      allow delete: if false;
+    }
+
+    match /refunds/{refundId} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager()
+        && request.resource.data.refundNo is string
+        && request.resource.data.invoiceId is string
+        && request.resource.data.branchId is string
+        && request.resource.data.customerId is string
+        && request.resource.data.customerName is string
+        && request.resource.data.customerPhone is string
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && isValidPosPaymentMethod(request.resource.data.method)
+        && request.resource.data.reason is string
+        && request.resource.data.reason != ''
+        && request.resource.data.approvedBy == request.auth.uid
+        && request.resource.data.refundedBy == request.auth.uid
+        && request.resource.data.refundedAt is timestamp
+        && request.resource.data.createdAt is timestamp;
+      allow update, delete: if false;
+    }
+
+    match /warranties/{warrantyId} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager()
+        && request.resource.data.invoiceId is string
+        && request.resource.data.invoiceItemKey is string
+        && request.resource.data.customerId is string
+        && request.resource.data.customerName is string
+        && request.resource.data.customerPhone is string
+        && request.resource.data.branchId is string
+        && request.resource.data.itemName is string
+        && request.resource.data.warrantyDurationDays is number
+        && request.resource.data.warrantyDurationDays > 0
+        && request.resource.data.claimLimit == 'unlimited'
+        && request.resource.data.status == 'active'
+        && request.resource.data.createdBy == request.auth.uid;
+      allow update: if isAdminOrManager()
+        && request.resource.data.invoiceId == resource.data.invoiceId
+        && request.resource.data.invoiceItemKey == resource.data.invoiceItemKey
+        && request.resource.data.jobId == resource.data.jobId
+        && request.resource.data.customerId == resource.data.customerId
+        && request.resource.data.customerName == resource.data.customerName
+        && request.resource.data.customerPhone == resource.data.customerPhone
+        && request.resource.data.deviceId == resource.data.deviceId
+        && request.resource.data.branchId == resource.data.branchId
+        && request.resource.data.itemName == resource.data.itemName
+        && request.resource.data.warrantyDurationDays == resource.data.warrantyDurationDays
+        && request.resource.data.startDate == resource.data.startDate
+        && request.resource.data.endDate == resource.data.endDate
+        && request.resource.data.claimLimit == resource.data.claimLimit
+        && request.resource.data.status == resource.data.status
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'publicWarrantyToken',
+          'publicWarrantyTokenCreatedAt',
+          'publicWarrantyTokenExpiresAt',
+          'publicWarrantyTokenStatus',
+          'warrantyTermsVersion',
+          'warrantyTermsSnapshot'
+        ])
+        && request.resource.data.publicWarrantyToken is string
+        && request.resource.data.publicWarrantyToken != ''
+        && request.resource.data.publicWarrantyTokenCreatedAt is timestamp
+        && (
+          request.resource.data.publicWarrantyTokenExpiresAt == null
+          || request.resource.data.publicWarrantyTokenExpiresAt is timestamp
+        )
+        && request.resource.data.publicWarrantyTokenStatus in ['active', 'revoked']
+        && request.resource.data.warrantyTermsVersion is string
+        && request.resource.data.warrantyTermsSnapshot is map;
+      allow delete: if false;
+    }
+
+    match /posCommissionEntries/{entryId} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager()
+        && request.resource.data.sourceType == 'invoice'
+        && request.resource.data.sourceId is string
+        && request.resource.data.invoiceId is string
+        && request.resource.data.invoiceItemKey is string
+        && request.resource.data.itemName is string
+        && request.resource.data.branchId is string
+        && request.resource.data.sourceTotal is number
+        && request.resource.data.commissionAmount is number
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt is timestamp;
+      allow update: if isAdminOrManager()
+        && request.resource.data.sourceType == resource.data.sourceType
+        && request.resource.data.sourceId == resource.data.sourceId
+        && request.resource.data.invoiceId == resource.data.invoiceId
+        && request.resource.data.invoiceItemKey == resource.data.invoiceItemKey
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.status in ['pending', 'approved', 'rejected', 'void', 'payroll_linked', 'paid']
+        && request.resource.data.commissionAmount is number
+        && (
+          (
+            resource.data.status == 'pending'
+            && request.resource.data.status == 'pending'
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly(['commissionAmount', 'note', 'updatedAt'])
+          )
+          ||
+          (
+            resource.data.status == 'pending'
+            && request.resource.data.status == 'approved'
+            && request.resource.data.commissionAmount > 0
+            && request.resource.data.approvedBy == request.auth.uid
+            && request.resource.data.approvedAt is timestamp
+          )
+          ||
+          (
+            resource.data.status == 'pending'
+            && request.resource.data.status == 'rejected'
+            && request.resource.data.rejectedBy == request.auth.uid
+            && request.resource.data.rejectedAt is timestamp
+            && request.resource.data.rejectionReason is string
+            && request.resource.data.rejectionReason != ''
+          )
+          ||
+          (
+            resource.data.status == 'approved'
+            && request.resource.data.status == 'payroll_linked'
+            && request.resource.data.payrollId is string
+            && request.resource.data.payrollId != ''
+            && request.resource.data.payrollLinkedBy == request.auth.uid
+            && request.resource.data.payrollLinkedAt is timestamp
+          )
+          ||
+          (
+            resource.data.status == 'payroll_linked'
+            && request.resource.data.status == 'paid'
+            && request.resource.data.payrollId == resource.data.payrollId
+            && request.resource.data.paidBy == request.auth.uid
+            && request.resource.data.paidAt is timestamp
+          )
+        );
+      allow delete: if false;
+    }
+
+    match /inventoryMovements/{movementId} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager()
+        && request.resource.data.sourceType == 'invoice'
+        && request.resource.data.sourceId is string
+        && request.resource.data.invoiceId is string
+        && request.resource.data.invoiceItemKey is string
+        && request.resource.data.itemName is string
+        && request.resource.data.quantity is number
+        && request.resource.data.quantity > 0
+        && request.resource.data.branchId is string
+        && request.resource.data.movementType == 'deduct'
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt is timestamp;
+      allow update: if isAdminOrManager()
+        && request.resource.data.sourceType == resource.data.sourceType
+        && request.resource.data.sourceId == resource.data.sourceId
+        && request.resource.data.invoiceId == resource.data.invoiceId
+        && request.resource.data.invoiceItemKey == resource.data.invoiceItemKey
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.status in ['pending', 'approved', 'rejected', 'applied', 'void', 'needs_inventory_mapping']
+        && (
+          (
+            request.resource.data.diff(resource.data).changedKeys().hasOnly(['inventoryItemId', 'status', 'updatedAt'])
+            && request.resource.data.status in ['pending', 'needs_inventory_mapping']
+          )
+          ||
+          (
+            resource.data.status in ['pending', 'needs_inventory_mapping']
+            && request.resource.data.status == 'approved'
+            && request.resource.data.inventoryItemId is string
+            && request.resource.data.inventoryItemId != ''
+            && request.resource.data.approvedBy == request.auth.uid
+            && request.resource.data.approvedAt is timestamp
+          )
+          ||
+          (
+            resource.data.status != 'applied'
+            && request.resource.data.status == 'rejected'
+            && request.resource.data.rejectedBy == request.auth.uid
+            && request.resource.data.rejectedAt is timestamp
+            && request.resource.data.reason is string
+            && request.resource.data.reason != ''
+          )
+          ||
+          (
+            resource.data.status == 'approved'
+            && request.resource.data.status == 'applied'
+            && request.resource.data.appliedBy == request.auth.uid
+            && request.resource.data.appliedAt is timestamp
+          )
+        );
+      allow delete: if false;
+    }
+
+    match /commissionRules/{ruleId} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager()
+        && request.resource.data.name is string
+        && request.resource.data.calculationType in ['fixed', 'percentage']
+        && request.resource.data.value is number
+        && request.resource.data.value > 0
+        && (request.resource.data.calculationType != 'percentage' || request.resource.data.value <= 100)
+        && request.resource.data.active is bool
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp;
+      allow update: if isAdminOrManager()
+        && request.resource.data.name is string
+        && request.resource.data.calculationType in ['fixed', 'percentage']
+        && request.resource.data.value is number
+        && request.resource.data.value > 0
+        && (request.resource.data.calculationType != 'percentage' || request.resource.data.value <= 100)
+        && request.resource.data.active is bool
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedAt is timestamp;
+      allow delete: if false;
+    }
+
+    match /inventoryItems/{inventoryItemId} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager()
+        && request.resource.data.name is string
+        && request.resource.data.name != ''
+        && request.resource.data.branchId is string
+        && request.resource.data.quantity is number
+        && request.resource.data.quantity >= 0
+        && request.resource.data.active is bool
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt is timestamp;
+      allow update: if isAdminOrManager()
+        && request.resource.data.name == resource.data.name
+        && request.resource.data.branchId == resource.data.branchId
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.quantity is number
+        && request.resource.data.quantity >= 0;
+      allow delete: if false;
+    }
+
+    match /inventoryStockLedger/{ledgerId} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager()
+        && request.resource.data.inventoryItemId is string
+        && request.resource.data.inventoryItemName is string
+        && request.resource.data.branchId is string
+        && request.resource.data.movementType in ['deduct', 'manual_adjustment', 'receive', 'return', 'correction']
+        && request.resource.data.quantityChange is number
+        && request.resource.data.quantityBefore is number
+        && request.resource.data.quantityAfter is number
+        && request.resource.data.quantityAfter >= 0
+        && request.resource.data.sourceType in ['invoice', 'manual', 'purchase_order', 'refund', 'warranty_claim']
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.createdBy == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /aiPricelistImports/{importId} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager()
+        && request.resource.data.importNo is string
+        && request.resource.data.importNo != ''
+        && request.resource.data.status in ['uploaded', 'processing', 'parsed', 'partially_approved', 'approved', 'rejected', 'failed']
+        && request.resource.data.detectedItems is list
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp;
+      allow update: if isAdminOrManager()
+        && request.resource.data.importNo == resource.data.importNo
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.status in ['uploaded', 'processing', 'parsed', 'partially_approved', 'approved', 'rejected', 'failed']
+        && request.resource.data.detectedItems is list
+        && request.resource.data.updatedAt is timestamp;
+      allow delete: if false;
+    }
+
+    match /whatsAppMessages/{messageId} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager()
+        && request.resource.data.branchId is string
+        && request.resource.data.senderNumber is string
+        && request.resource.data.recipientPhone is string
+        && request.resource.data.messageType in ['quotation', 'invoice', 'payment_request', 'warranty', 'payment_submission', 'custom']
+        && request.resource.data.messageBody is string
+        && request.resource.data.messageBody != ''
+        && request.resource.data.status in ['draft', 'sent', 'failed']
+        && request.resource.data.createdAt is timestamp;
+      allow update: if isAdminOrManager()
+        && request.resource.data.branchId == resource.data.branchId
+        && request.resource.data.senderNumber == resource.data.senderNumber
+        && request.resource.data.recipientPhone == resource.data.recipientPhone
+        && request.resource.data.messageType == resource.data.messageType
+        && request.resource.data.messageBody == resource.data.messageBody
+        && request.resource.data.status in ['draft', 'sent', 'failed']
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if false;
+    }
+
+    match /whatsAppInboundMessages/{messageId} {
+      allow read: if isAdminOrManager();
+      allow create: if false;
+      allow update: if isAdminOrManager()
+        && request.resource.data.providerMessageId == resource.data.providerMessageId
+        && request.resource.data.senderPhone == resource.data.senderPhone
+        && request.resource.data.receiverNumber == resource.data.receiverNumber
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.status in ['received', 'read', 'archived'];
+      allow delete: if false;
+    }
+
+    match /whatsAppConversations/{conversationId} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager()
+        && request.resource.data.phone is string
+        && request.resource.data.phone != ''
+        && request.resource.data.unreadCount is number
+        && request.resource.data.unreadCount >= 0
+        && request.resource.data.status in ['open', 'pending_customer', 'pending_staff', 'resolved', 'archived']
+        && request.resource.data.priority in ['low', 'normal', 'high']
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp;
+      allow update: if isAdminOrManager()
+        && request.resource.data.phone == resource.data.phone
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.unreadCount is number
+        && request.resource.data.unreadCount >= 0
+        && request.resource.data.status in ['open', 'pending_customer', 'pending_staff', 'resolved', 'archived']
+        && request.resource.data.priority in ['low', 'normal', 'high']
+        && request.resource.data.updatedAt is timestamp;
+      allow delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

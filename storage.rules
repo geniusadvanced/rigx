@@ -1,0 +1,124 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function currentUserPath() {
+      return /databases/(default)/documents/users/$(request.auth.uid);
+    }
+
+    function role() {
+      return signedIn() && firestore.exists(currentUserPath())
+        ? firestore.get(currentUserPath()).data.role
+        : null;
+    }
+
+    function isAdminOrManager() {
+      return role() in ['admin', 'manager', 'ADMIN', 'MANAGER'];
+    }
+
+    function isAdmin() {
+      return role() in ['admin', 'ADMIN'];
+    }
+
+    function currentUserBranchId() {
+      return signedIn() && firestore.exists(currentUserPath())
+        ? firestore.get(currentUserPath()).data.branchId
+        : null;
+    }
+
+    function jobPath(jobId) {
+      return /databases/(default)/documents/jobs/$(jobId);
+    }
+
+    function isAssignedJobTechnician(jobId) {
+      return signedIn()
+        && firestore.exists(jobPath(jobId))
+        && firestore.get(jobPath(jobId)).data.technicianId == request.auth.uid;
+    }
+
+    function hasSafeContentType() {
+      return request.resource.contentType in [
+        'image/jpeg',
+        'image/png',
+        'application/pdf'
+      ];
+    }
+
+    function hasSafeSize() {
+      return request.resource.size <= 10 * 1024 * 1024;
+    }
+
+    function hasMedicalCertificateSize() {
+      return request.resource.size <= 5 * 1024 * 1024;
+    }
+
+    match /job-documents/{jobId}/{filePath=**} {
+      allow read: if isAdminOrManager() || isAssignedJobTechnician(jobId);
+      allow create: if false;
+      allow update, delete: if false;
+    }
+
+    match /job-documents/{branchId}/{jobId}/{documentType}/{fileName} {
+      allow read: if isAdmin()
+        || (role() == 'manager' && currentUserBranchId() == branchId)
+        || isAssignedJobTechnician(jobId);
+      allow create: if (
+          isAdmin()
+          || (role() == 'manager' && currentUserBranchId() == branchId)
+          || isAssignedJobTechnician(jobId)
+        )
+        && firestore.exists(jobPath(jobId))
+        && firestore.get(jobPath(jobId)).data.branchId == branchId
+        && resource == null
+        && hasSafeContentType()
+        && hasSafeSize();
+      allow update, delete: if false;
+    }
+
+    match /leave-mc/{userId}/{leaveRequestId}/{fileName} {
+      allow read: if isAdminOrManager() || (signedIn() && request.auth.uid == userId);
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && resource == null
+        && hasSafeContentType()
+        && hasMedicalCertificateSize();
+      allow update, delete: if false;
+    }
+
+    match /pos-payments/{invoiceId}/{paymentId}/{fileName} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager()
+        && resource == null
+        && hasSafeContentType()
+        && hasSafeSize();
+      allow update, delete: if false;
+    }
+
+    match /payment-submissions/{invoiceId}/{submissionId}/{fileName} {
+      allow read: if isAdminOrManager();
+      allow create, update, delete: if false;
+    }
+
+    match /ai-pricelist-imports/{filePath=**} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager()
+        && resource == null
+        && hasSafeContentType()
+        && hasSafeSize();
+      allow update, delete: if false;
+    }
+
+    match /whatsapp-media/{branchId}/{senderPhone}/{providerMessageId}/{fileName} {
+      allow read: if isAdminOrManager();
+      allow write: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
