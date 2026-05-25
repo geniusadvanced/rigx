@@ -582,6 +582,28 @@ function afterRepairChecklistCompleted(checklist?: DeviceChecklist | null): bool
     && Boolean(checklist.completedAt);
 }
 
+function beforeRepairChecklistCompleted(checklist?: DeviceChecklist | null): boolean {
+  return Boolean(checklist?.checklistStatus && [
+    'staff_completed',
+    'completed_by_staff',
+    'sent_to_customer',
+    'customer_signed',
+    'signature_overridden',
+    'final_checked',
+    'completed',
+  ].includes(checklist.checklistStatus));
+}
+
+function deviceChecklistSignatureSatisfied(checklist?: DeviceChecklist | null): boolean {
+  return checklist?.checklistStatus === 'customer_signed'
+    || checklist?.checklistStatus === 'signature_overridden'
+    || Boolean(checklist?.customerSignedAt || checklist?.overrideAt);
+}
+
+function isCustomerReleaseStatus(status: RepairLifecycleStatus): boolean {
+  return ['ready_for_pickup', 'delivered', 'warranty_active', 'warranty_expired'].includes(status);
+}
+
 interface ScrollAnchorSnapshot {
   element: Element | null;
   top: number;
@@ -821,17 +843,36 @@ export default function JobsPage() {
       (isTechnician(profile.role) && selectedJob.technicianId === profile.uid)
     ),
   );
-  const missingRequiredDocuments = useMemo(
-    () => getMissingRequiredDocumentTypes(documents, selectedJob),
-    [documents, selectedJob],
-  );
   const requiredDocumentTypes = useMemo(() => getRequiredDocumentTypes(selectedJob), [selectedJob]);
+  const checklistRequired = requiredDocumentTypes.includes('checklist');
+  const invoiceRequired = requiredDocumentTypes.includes('invoice');
+  const beforeChecklistDone = beforeRepairChecklistCompleted(deviceChecklist);
+  const afterChecklistDone = afterRepairChecklistCompleted(afterRepairChecklist);
+  const customerSignatureDone = deviceChecklistSignatureSatisfied(deviceChecklist);
+  const invoiceLinked = Boolean(posFinancialSummary?.invoiceIds.length);
+  const invoicePaid = invoiceLinked
+    && Number(posFinancialSummary?.outstandingBalance || 0) <= 0
+    && Number(posFinancialSummary?.paidAmount || 0) > 0;
+  const systemSatisfiedRequiredDocumentTypes = useMemo(() => {
+    const satisfied = new Set<JobDocumentType>();
+    if (checklistRequired && beforeChecklistDone && afterChecklistDone) satisfied.add('checklist');
+    if (invoiceRequired && invoicePaid) satisfied.add('invoice');
+    return satisfied;
+  }, [afterChecklistDone, beforeChecklistDone, checklistRequired, invoicePaid, invoiceRequired]);
+  const missingRequiredDocuments = useMemo(
+    () => getMissingRequiredDocumentTypes(documents, selectedJob)
+      .filter((type) => !systemSatisfiedRequiredDocumentTypes.has(type)),
+    [documents, selectedJob, systemSatisfiedRequiredDocumentTypes],
+  );
   const documentRequirementRows = useMemo(() => {
-    const requiredRows = requiredDocumentTypes.map((type) => ({
-      type,
-      required: true,
-      document: documents.find((document) => document.type === type && document.status !== 'removed'),
-    }));
+    const systemManagedTypes: JobDocumentType[] = ['checklist', 'invoice'];
+    const requiredRows = requiredDocumentTypes
+      .filter((type) => !systemManagedTypes.includes(type))
+      .map((type) => ({
+        type,
+        required: true,
+        document: documents.find((document) => document.type === type && document.status !== 'removed'),
+      }));
     const extraRows = documents
       .filter((document) => document.status !== 'removed' && !requiredDocumentTypes.includes(document.type))
       .map((document) => ({ type: document.type, required: false, document }));
@@ -843,39 +884,30 @@ export default function JobsPage() {
       : 'No manual upload required'
   ), [requiredDocumentTypes]);
   const systemDocumentRows = useMemo(() => {
-    const completedChecklistStatuses: Array<DeviceChecklist['checklistStatus']> = [
-      'staff_completed',
-      'completed_by_staff',
-      'sent_to_customer',
-      'customer_signed',
-      'signature_overridden',
-      'final_checked',
-      'completed',
-    ];
-    const checklistCompleted = Boolean(
-      deviceChecklist?.checklistStatus && completedChecklistStatuses.includes(deviceChecklist.checklistStatus),
-    );
-    const hasInvoice = Boolean(posFinancialSummary?.invoiceIds.length);
-    const invoicePaid = hasInvoice
-      && Number(posFinancialSummary?.outstandingBalance || 0) <= 0
-      && Number(posFinancialSummary?.paidAmount || 0) > 0;
-    return [
+    const rows = [
       {
         key: 'device-checklist-sop',
-        label: 'Device Checklist SOP',
-        status: systemDocumentStatus(checklistCompleted),
-        detail: checklistCompleted ? 'Completed in Device Checklist SOP' : 'Pending Device Checklist SOP completion',
+        label: 'Device Checklist',
+        status: systemDocumentStatus(!checklistRequired || (beforeChecklistDone && afterChecklistDone)),
+        detail: [
+          `Before Repair Checklist: ${beforeChecklistDone ? 'Completed' : 'Pending'}`,
+          `After Repair Checklist: ${afterChecklistDone ? 'Completed' : 'Pending'}`,
+          `Customer Signature: ${customerSignatureDone ? 'Signed' : 'Pending'}`,
+        ].join(' · '),
       },
       {
         key: 'final-customer-invoice',
         label: 'Final Customer Invoice',
         status: invoicePaid
           ? { label: 'Auto-linked / Paid', className: 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300' }
-          : { label: hasInvoice ? 'Pending payment' : 'Pending invoice/payment', className: 'border-amber-500/35 bg-amber-500/10 text-amber-300' },
-        detail: hasInvoice ? 'Linked from POS invoice/payment flow' : 'Waiting for POS invoice/payment flow',
+          : { label: invoiceLinked ? 'Pending payment' : 'Pending invoice/payment', className: 'border-amber-500/35 bg-amber-500/10 text-amber-300' },
+        detail: invoiceLinked ? 'Linked from POS invoice/payment flow' : 'Waiting for POS invoice/payment flow',
       },
     ];
-  }, [deviceChecklist?.checklistStatus, posFinancialSummary]);
+    return rows.filter((row) => (
+      row.key === 'device-checklist-sop' ? checklistRequired : invoiceRequired
+    ));
+  }, [afterChecklistDone, beforeChecklistDone, checklistRequired, customerSignatureDone, invoiceLinked, invoicePaid, invoiceRequired]);
   const allowedNextStatuses = useMemo(() => {
     if (!profile || !selectedJob) return [];
     return getAllowedRepairLifecycleTransitions(selectedJob, profile);
@@ -1885,9 +1917,9 @@ export default function JobsPage() {
       setMessage('Customer Device Checklist signature is required before repair can proceed. Admin/manager can override with a reason if the customer is unavailable.');
       return;
     }
-    if (nextStatus === 'ready_for_pickup' && !afterRepairChecklistCompleted(afterRepairChecklist)) {
+    if (isCustomerReleaseStatus(nextStatus) && !afterRepairChecklistCompleted(afterRepairChecklist)) {
       setShowAfterRepairChecklistEditor(true);
-      setMessage('Please complete After Repair Checklist before marking this device as Ready for Pickup.');
+      setMessage('Please complete After Repair Checklist before handing over the device to customer.');
       return;
     }
 
@@ -4820,89 +4852,22 @@ export default function JobsPage() {
             ) : null}
           </div>
 
-          {['repair_completed', 'ready_for_pickup', 'delivered', 'warranty_active', 'warranty_expired'].includes(getCurrentRepairLifecycleStatus(selectedJob)) ? (
-            <div className="mt-4 rounded-md border border-white/10 bg-[#050505] p-3">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <div className="font-medium text-white">After Repair Checklist</div>
-                  <div className="mt-1 text-xs text-slate-500">
-                    Status:{' '}
-                    <span className={`rounded-full border px-2 py-1 ${afterRepairChecklistCompleted(afterRepairChecklist) ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/40 bg-amber-500/10 text-amber-200'}`}>
-                      {afterRepairChecklistCompleted(afterRepairChecklist) ? 'Completed' : 'Required before Ready for Pickup'}
-                    </span>
-                  </div>
-                  {afterRepairChecklist?.completedAt ? (
-                    <div className="mt-1 text-xs text-emerald-300">Completed: {formatTimestamp(afterRepairChecklist.completedAt)}</div>
-                  ) : (
-                    <div className="mt-2 text-xs text-amber-300">Please complete After Repair Checklist before marking this device as Ready for Pickup.</div>
-                  )}
-                </div>
-                {canUploadForSelectedJob ? (
-                  <button
-                    type="button"
-                    disabled={actionLoading}
-                    onClick={() => setShowAfterRepairChecklistEditor((current) => !current)}
-                    className="rounded-md border border-orange-500/30 px-3 py-2 text-xs font-medium text-orange-200 disabled:opacity-60"
-                  >
-                    {afterRepairChecklistCompleted(afterRepairChecklist) ? 'Review Checklist' : 'Open After Repair Checklist'}
-                  </button>
-                ) : null}
-              </div>
-
-              {showAfterRepairChecklistEditor ? (
-                <div className="mt-4 rounded-md border border-white/10 bg-[#0B0B0B] p-3">
-                  <div className="grid gap-2 md:grid-cols-2">
-                    {afterRepairChecklistForm.testedItems.map((item, itemIndex) => (
-                      <label key={item.key} className="grid gap-1 text-xs text-slate-400">
-                        {item.label}
-                        <select
-                          value={item.status}
-                          onChange={(event) => setAfterRepairChecklistForm((current) => ({
-                            ...current,
-                            testedItems: current.testedItems.map((row, index) => index === itemIndex ? { ...row, status: event.target.value as AfterRepairTestedItem['status'] } : row),
-                          }))}
-                          className="rounded-md border border-white/10 bg-[#151515] px-2 py-2 text-xs text-white"
-                        >
-                          <option value="passed">Passed</option>
-                          <option value="issue">Issue</option>
-                          <option value="na">N/A</option>
-                        </select>
-                      </label>
-                    ))}
-                  </div>
-                  <label className="mt-3 grid gap-1 text-xs text-slate-400">
-                    Remarks
-                    <textarea
-                      value={afterRepairChecklistForm.remarks}
-                      onChange={(event) => setAfterRepairChecklistForm((current) => ({ ...current, remarks: event.target.value }))}
-                      rows={3}
-                      placeholder="Optional remarks"
-                      className="rounded-md border border-white/10 bg-[#151515] px-3 py-2 text-sm text-white outline-none focus:border-orange-500/35"
-                    />
-                  </label>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      disabled={actionLoading}
-                      onClick={handleCompleteAfterRepairChecklist}
-                      className="rounded-md bg-orange-500 px-3 py-2 text-xs font-semibold text-black disabled:opacity-60"
-                    >
-                      Complete After Repair Checklist
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-
           <div className="mt-4 rounded-md border border-white/10 bg-[#050505] p-3">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <div className="font-medium text-white">Device Checklist SOP</div>
+                <div className="font-medium text-white">Device Checklist</div>
                 <div className="mt-1 text-xs text-slate-500">
-                  Status:{' '}
+                  Before Repair:{' '}
                   <span className={`rounded-full border px-2 py-1 ${deviceChecklistStatusClass(deviceChecklist?.checklistStatus)}`}>
                     {deviceChecklistStatusLabel(deviceChecklist?.checklistStatus)}
+                  </span>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                  <span className={`rounded-full border px-2 py-1 ${afterRepairChecklistCompleted(afterRepairChecklist) ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/40 bg-amber-500/10 text-amber-200'}`}>
+                    After Repair: {afterRepairChecklistCompleted(afterRepairChecklist) ? 'Completed' : 'Pending'}
+                  </span>
+                  <span className={`rounded-full border px-2 py-1 ${deviceChecklistSignatureSatisfied(deviceChecklist) ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/40 bg-amber-500/10 text-amber-200'}`}>
+                    Customer Signature: {deviceChecklistSignatureSatisfied(deviceChecklist) ? 'Signed' : 'Pending'}
                   </span>
                 </div>
                 <div className="mt-2 text-xs text-slate-500">
@@ -4913,6 +4878,11 @@ export default function JobsPage() {
                 {deviceChecklist?.customerSignedAt ? (
                   <div className="mt-1 text-xs text-emerald-300">Signed: {formatTimestamp(deviceChecklist.customerSignedAt)}</div>
                 ) : null}
+                {afterRepairChecklist?.completedAt ? (
+                  <div className="mt-1 text-xs text-emerald-300">After repair completed: {formatTimestamp(afterRepairChecklist.completedAt)}</div>
+                ) : (
+                  <div className="mt-1 text-xs text-amber-300">Please complete After Repair Checklist before handing over the device to customer.</div>
+                )}
               </div>
               <div className="flex flex-wrap gap-2">
                 {canUploadForSelectedJob ? (
@@ -4928,6 +4898,16 @@ export default function JobsPage() {
                     >
                       {deviceChecklist ? 'Edit Checklist' : 'Create Checklist'}
                     </button>
+                    {['repair_completed', 'ready_for_pickup', 'delivered', 'warranty_active', 'warranty_expired'].includes(getCurrentRepairLifecycleStatus(selectedJob)) ? (
+                      <button
+                        type="button"
+                        disabled={actionLoading}
+                        onClick={() => setShowAfterRepairChecklistEditor((current) => !current)}
+                        className="rounded-md border border-orange-500/30 px-3 py-2 text-xs font-medium text-orange-200 disabled:opacity-60"
+                      >
+                        {afterRepairChecklistCompleted(afterRepairChecklist) ? 'Review After Repair' : 'Complete After Repair'}
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       disabled={actionLoading || deviceChecklist?.checklistStatus === 'customer_signed'}
@@ -4970,6 +4950,50 @@ export default function JobsPage() {
                 ) : null}
               </div>
             </div>
+
+            {showAfterRepairChecklistEditor ? (
+              <div className="mt-4 rounded-md border border-white/10 bg-[#0B0B0B] p-3">
+                <div className="grid gap-2 md:grid-cols-2">
+                  {afterRepairChecklistForm.testedItems.map((item, itemIndex) => (
+                    <label key={item.key} className="grid gap-1 text-xs text-slate-400">
+                      {item.label}
+                      <select
+                        value={item.status}
+                        onChange={(event) => setAfterRepairChecklistForm((current) => ({
+                          ...current,
+                          testedItems: current.testedItems.map((row, index) => index === itemIndex ? { ...row, status: event.target.value as AfterRepairTestedItem['status'] } : row),
+                        }))}
+                        className="rounded-md border border-white/10 bg-[#151515] px-2 py-2 text-xs text-white"
+                      >
+                        <option value="passed">Passed</option>
+                        <option value="issue">Issue</option>
+                        <option value="na">N/A</option>
+                      </select>
+                    </label>
+                  ))}
+                </div>
+                <label className="mt-3 grid gap-1 text-xs text-slate-400">
+                  Remarks
+                  <textarea
+                    value={afterRepairChecklistForm.remarks}
+                    onChange={(event) => setAfterRepairChecklistForm((current) => ({ ...current, remarks: event.target.value }))}
+                    rows={3}
+                    placeholder="Optional remarks"
+                    className="rounded-md border border-white/10 bg-[#151515] px-3 py-2 text-sm text-white outline-none focus:border-orange-500/35"
+                  />
+                </label>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={actionLoading}
+                    onClick={handleCompleteAfterRepairChecklist}
+                    className="rounded-md bg-orange-500 px-3 py-2 text-xs font-semibold text-black disabled:opacity-60"
+                  >
+                    Complete After Repair
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
             {showDeviceChecklistEditor ? (
               <div className="mt-4 rounded-md border border-white/10 bg-[#0B0B0B] p-3">
@@ -5352,16 +5376,16 @@ export default function JobsPage() {
                         key={nextStatus}
                         type="button"
                         onClick={() => handleStatusChange(nextStatus)}
-                        disabled={actionLoading || (nextStatus === 'ready_for_pickup' && !afterRepairChecklistCompleted(afterRepairChecklist))}
-                        title={nextStatus === 'ready_for_pickup' && !afterRepairChecklistCompleted(afterRepairChecklist) ? 'Please complete After Repair Checklist before marking this device as Ready for Pickup.' : undefined}
+                        disabled={actionLoading || (isCustomerReleaseStatus(nextStatus) && !afterRepairChecklistCompleted(afterRepairChecklist))}
+                        title={isCustomerReleaseStatus(nextStatus) && !afterRepairChecklistCompleted(afterRepairChecklist) ? 'Please complete After Repair Checklist before handing over the device to customer.' : undefined}
                         className="rounded-md border border-orange-500/30 px-3 py-2 text-xs font-medium text-orange-200 hover:bg-[#F97316]/10 disabled:opacity-60"
                       >
                         {nextStatus === 'ready_for_pickup' ? 'Ready for Pickup + WhatsApp' : repairLifecycleActionLabels[nextStatus]}
                       </button>
                     ))}
                   </div>
-                  {allowedNextStatuses.includes('ready_for_pickup') && !afterRepairChecklistCompleted(afterRepairChecklist) ? (
-                    <div className="mt-2 text-xs text-amber-300">Please complete After Repair Checklist before marking this device as Ready for Pickup.</div>
+                  {allowedNextStatuses.some(isCustomerReleaseStatus) && !afterRepairChecklistCompleted(afterRepairChecklist) ? (
+                    <div className="mt-2 text-xs text-amber-300">Please complete After Repair Checklist before handing over the device to customer.</div>
                   ) : null}
                 </div>
               ) : (
@@ -6416,7 +6440,7 @@ export default function JobsPage() {
                     <td colSpan={6} className="px-4 py-6 text-center text-slate-400">Loading documents</td>
                   </tr>
                 ) : null}
-                {!detailsLoading && requiredDocumentTypes.length > 0 && documents.length === 0 ? (
+                {!detailsLoading && missingRequiredDocuments.length > 0 && documentRequirementRows.length > 0 && documents.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="px-4 py-4 text-center text-amber-200">Required documents are missing. Upload the documents below.</td>
                   </tr>

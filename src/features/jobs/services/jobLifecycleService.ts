@@ -134,6 +134,10 @@ const timestampFieldByLifecycle: Partial<Record<RepairLifecycleStatus, string>> 
   cancelled: 'cancelledAt',
 };
 
+function isCustomerReleaseStatus(status: RepairLifecycleStatus): boolean {
+  return ['ready_for_pickup', 'delivered', 'warranty_active', 'warranty_expired'].includes(status);
+}
+
 export function normalizeRepairLifecycleStatus(status?: string): RepairLifecycleStatus {
   if (repairLifecycleStatuses.includes(status as RepairLifecycleStatus)) return status as RepairLifecycleStatus;
   if (status === 'pending' || status === 'pending_approval' || status === 'approved') return 'received';
@@ -260,7 +264,7 @@ export async function updateJobLifecycleStatus(params: {
   if (params.nextStatus === 'warranty_active' && !['delivered', 'repair_completed'].includes(currentStatus) && !overrideUsed) {
     throw new Error('Cannot activate warranty before delivery or completion');
   }
-  if (params.nextStatus === 'ready_for_pickup') {
+  if (isCustomerReleaseStatus(params.nextStatus)) {
     const afterRepairChecklist = await getAfterRepairChecklistByJob({
       jobId: params.job.docId,
       user: params.user,
@@ -272,7 +276,7 @@ export async function updateJobLifecycleStatus(params: {
       || afterRepairChecklist.checklistStatus !== 'completed'
       || !afterRepairChecklist.completedAt
     ) {
-      throw new Error('Please complete After Repair Checklist before marking this device as Ready for Pickup.');
+      throw new Error('Please complete After Repair Checklist before handing over the device to customer.');
     }
   }
 

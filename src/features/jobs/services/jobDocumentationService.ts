@@ -218,6 +218,57 @@ function hasApprovedType(documents: JobDocument[], type: JobDocumentType): boole
   return documents.some((document) => document.type === type && document.status === 'approved');
 }
 
+function isBeforeRepairChecklistCompleted(data: Record<string, unknown>): boolean {
+  const status = String(data.checklistStatus || '');
+  return (!data.checklistType || data.checklistType === 'pre_repair')
+    && [
+      'staff_completed',
+      'completed_by_staff',
+      'sent_to_customer',
+      'customer_signed',
+      'signature_overridden',
+      'final_checked',
+      'completed',
+    ].includes(status);
+}
+
+function isAfterRepairChecklistCompleted(data: Record<string, unknown>): boolean {
+  return data.checklistType === 'after_repair'
+    && data.checklistStatus === 'completed'
+    && Boolean(data.completedAt);
+}
+
+async function getSystemSatisfiedRequiredDocumentTypes(job: JobLike): Promise<Set<JobDocumentType>> {
+  const satisfied = new Set<JobDocumentType>();
+  if (!job.docId) return satisfied;
+  const required = getRequiredDocumentTypes(job);
+
+  await Promise.all([
+    required.includes('checklist')
+      ? getDocs(query(collection(db, 'deviceChecklists'), where('jobId', '==', job.docId)))
+          .then((snapshot) => {
+            const rows = snapshot.docs.map((row) => row.data());
+            if (rows.some(isBeforeRepairChecklistCompleted) && rows.some(isAfterRepairChecklistCompleted)) {
+              satisfied.add('checklist');
+            }
+          })
+      : Promise.resolve(),
+    required.includes('invoice')
+      ? getDocs(query(collection(db, 'invoices'), where('jobId', '==', job.docId)))
+          .then((snapshot) => {
+            const paidInvoice = snapshot.docs.some((row) => {
+              const data = row.data();
+              return data.paymentStatus === 'paid'
+                || (Number(data.balance || 0) <= 0 && Number(data.amountPaid || 0) > 0);
+            });
+            if (paidInvoice) satisfied.add('invoice');
+          })
+      : Promise.resolve(),
+  ]);
+
+  return satisfied;
+}
+
 export function getRequiredDocumentTypes(job?: JobLike | null): JobDocumentType[] {
   const costProfile = job?.costProfile || 'parts_required';
   const customRequiredDocuments = Array.isArray(job?.requiredDocuments)
@@ -251,8 +302,13 @@ export function getMissingRequiredDocumentTypes(documents: JobDocument[], job?: 
   });
 }
 
-function approvedRequiredDocumentsExist(documents: JobDocument[], job: JobLike): boolean {
-  return getMissingRequiredDocumentTypes(documents, job).length === 0;
+async function getMissingRequiredDocumentTypesWithSystem(documents: JobDocument[], job: JobLike): Promise<JobDocumentType[]> {
+  const systemSatisfied = await getSystemSatisfiedRequiredDocumentTypes(job);
+  return getMissingRequiredDocumentTypes(documents, job).filter((type) => !systemSatisfied.has(type));
+}
+
+async function approvedRequiredDocumentsExist(documents: JobDocument[], job: JobLike): Promise<boolean> {
+  return (await getMissingRequiredDocumentTypesWithSystem(documents, job)).length === 0;
 }
 
 export async function buildJobFinancialPreview(jobId: string): Promise<JobFinancialPreview> {
@@ -263,7 +319,7 @@ export async function buildJobFinancialPreview(jobId: string): Promise<JobFinanc
     getPartsOrderCost(jobId),
     getOutsourceCost(jobId),
   ]);
-  const missingRequiredDocuments = getMissingRequiredDocumentTypes(documents, job);
+  const missingRequiredDocuments = await getMissingRequiredDocumentTypesWithSystem(documents, job);
 
   if (!isJobApproved(job)) {
     throw new Error('Job must be approved before financial preview or finalization');
@@ -542,7 +598,7 @@ export async function approveCommissionForJob(jobId: string, approvedBy: string)
 
   if (!isJobApproved(job)) throw new Error('Job must be approved before commission approval');
   if (!isPaymentConfirmed(job)) throw new Error('Customer payment must be confirmed before commission approval');
-  if (!approvedRequiredDocumentsExist(documents, job)) throw new Error('Required job documents must be approved');
+  if (!(await approvedRequiredDocumentsExist(documents, job))) throw new Error('Required job documents must be approved');
   if (!financial?.locked) throw new Error('Job financial snapshot must be locked before commission approval');
   if (!job.technicianId) throw new Error('Job technician is missing');
 
