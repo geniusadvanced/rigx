@@ -5,7 +5,6 @@ import { malaysiaPhoneVariants, maskPhoneForLog, normalizeMalaysiaPhoneNumber } 
 
 const TRACK_DEBUG_LABEL = '[PUBLIC TRACK DEBUG]';
 const TRACK_LOOKUP_VERSION = 'phone-lookup-v2';
-const FALLBACK_SCAN_LIMIT = 1000;
 
 const statusMap: Record<string, { status: string; label: string; progress: number }> = {
   received: { status: 'received', label: 'Device Received', progress: 10 },
@@ -70,6 +69,10 @@ function trackDebug(payload: Record<string, unknown>) {
   console.warn(TRACK_DEBUG_LABEL, JSON.stringify(payload));
 }
 
+function elapsedMs(startedAt: number): number {
+  return Date.now() - startedAt;
+}
+
 function maskDocId(id: string): string {
   if (!id) return '';
   if (id.length <= 8) return `${id.slice(0, 2)}***`;
@@ -97,15 +100,17 @@ function branchName(branchId: string): string {
 
 async function findJob(repairId: string) {
   const trimmed = normalizeRepairId(repairId);
-  const direct = await adminDb.collection('jobs').doc(trimmed).get();
+  const [direct, byJobNo, byJobNumber, bySheet, byAgn] = await Promise.all([
+    adminDb.collection('jobs').doc(trimmed).get(),
+    adminDb.collection('jobs').where('jobNo', '==', trimmed).limit(1).get(),
+    adminDb.collection('jobs').where('jobNumber', '==', trimmed).limit(1).get(),
+    adminDb.collection('jobs').where('jobSheetNo', '==', trimmed).limit(1).get(),
+    adminDb.collection('jobs').where('agnJobNumber', '==', trimmed).limit(1).get(),
+  ]);
   if (direct.exists) return direct;
-  const byJobNo = await adminDb.collection('jobs').where('jobNo', '==', trimmed).limit(1).get();
   if (!byJobNo.empty) return byJobNo.docs[0];
-  const byJobNumber = await adminDb.collection('jobs').where('jobNumber', '==', trimmed).limit(1).get();
   if (!byJobNumber.empty) return byJobNumber.docs[0];
-  const bySheet = await adminDb.collection('jobs').where('jobSheetNo', '==', trimmed).limit(1).get();
   if (!bySheet.empty) return bySheet.docs[0];
-  const byAgn = await adminDb.collection('jobs').where('agnJobNumber', '==', trimmed).limit(1).get();
   if (!byAgn.empty) return byAgn.docs[0];
   return null;
 }
@@ -127,21 +132,6 @@ function jobPhoneCandidates(job: FirebaseFirestore.DocumentData): string[] {
 
 function jobMatchesPhone(job: FirebaseFirestore.DocumentData, normalizedPhone: string): boolean {
   return jobPhoneCandidates(job).some((value) => normalizePhone(value) === normalizedPhone);
-}
-
-function customerPhoneCandidates(customer: FirebaseFirestore.DocumentData): string[] {
-  return [
-    customer.normalizedPhone,
-    customer.phone,
-    customer.customerPhone,
-    customer.customerContact,
-    customer.phoneSnapshot,
-    customer.customerPhoneSnapshot,
-  ].map((value) => String(value || '')).filter(Boolean);
-}
-
-function customerMatchesPhone(customer: FirebaseFirestore.DocumentData, normalizedPhone: string): boolean {
-  return customerPhoneCandidates(customer).some((value) => normalizePhone(value) === normalizedPhone);
 }
 
 function mapPublicJob(doc: FirebaseFirestore.QueryDocumentSnapshot | FirebaseFirestore.DocumentSnapshot) {
@@ -169,112 +159,83 @@ function mapPublicJob(doc: FirebaseFirestore.QueryDocumentSnapshot | FirebaseFir
   };
 }
 
-async function linkedCustomerIds(normalizedPhone: string, variants: string[]): Promise<string[]> {
+async function linkedCustomerIds(normalizedPhone: string): Promise<{ ids: string[]; queryCount: number; firestoreMs: number }> {
+  const startedAt = Date.now();
   const ids = new Set<string>();
-  const customerFields = ['normalizedPhone', 'phone'];
-  for (const field of customerFields) {
-    for (const value of field === 'normalizedPhone' ? [normalizedPhone] : variants) {
-      const snapshot = await adminDb.collection('customers').where(field, '==', value).limit(10).get();
-      snapshot.docs.forEach((doc) => ids.add(doc.id));
-    }
-  }
-  trackDebug({
-    checkpoint: 'customerExactQueries:complete',
-    normalizedMaskedPhone: maskPhoneForLog(normalizedPhone),
-    matchedCustomerCount: ids.size,
-  });
-  if (ids.size === 0) {
-    const customerSnapshot = await adminDb.collection('customers').limit(FALLBACK_SCAN_LIMIT).get();
-    customerSnapshot.docs
-      .filter((doc) => customerMatchesPhone(doc.data() || {}, normalizedPhone))
-      .forEach((doc) => ids.add(doc.id));
-    trackDebug({
-      checkpoint: 'customerFallbackScan:complete',
-      normalizedMaskedPhone: maskPhoneForLog(normalizedPhone),
-      scanned: customerSnapshot.size,
-      matchedCustomerCount: ids.size,
-    });
-  }
-  return Array.from(ids);
+  const queryTargets = [
+    { field: 'normalizedPhone', values: [normalizedPhone] },
+  ].flatMap(({ field, values }) => values.map((value) => ({ field, value })));
+
+  const uniqueTargets = Array.from(new Map(
+    queryTargets
+      .filter(({ value }) => Boolean(value))
+      .map((target) => [`${target.field}:${target.value}`, target]),
+  ).values());
+
+  const snapshots = await Promise.all(
+    uniqueTargets.map(({ field, value }) => adminDb.collection('customers').where(field, '==', value).limit(10).get()),
+  );
+  snapshots.forEach((snapshot) => snapshot.docs.forEach((doc) => ids.add(doc.id)));
+
+  return { ids: Array.from(ids), queryCount: uniqueTargets.length, firestoreMs: elapsedMs(startedAt) };
 }
 
 async function findJobsByPhone(phone: string) {
+  const startedAt = Date.now();
   const normalizedPhone = normalizePhone(phone);
-  if (!normalizedPhone) return [];
+  if (!normalizedPhone) return { jobs: [], lookupMs: elapsedMs(startedAt), firestoreMs: 0, queryCount: 0, customerMatchCount: 0 };
   const variants = phoneVariants(phone);
   const docs = new Map<string, FirebaseFirestore.QueryDocumentSnapshot | FirebaseFirestore.DocumentSnapshot>();
-  const jobFields = [
-    'normalizedPhone',
-    'customerPhone',
-    'phone',
-    'customerContact',
-    'phoneSnapshot',
-    'customerPhoneSnapshot',
-    'customer.phone',
-    'customer.customerPhone',
-    'customer.customerContact',
-  ];
 
-  for (const field of jobFields) {
-    for (const value of field === 'normalizedPhone' ? [normalizedPhone] : variants) {
-      const snapshot = await adminDb.collection('jobs').where(field, '==', value).limit(10).get();
-      snapshot.docs.forEach((doc) => docs.set(doc.id, doc));
-    }
-  }
-  trackDebug({
-    checkpoint: 'jobPhoneFieldQueries:complete',
-    rawMaskedPhone: maskPhoneForLog(phone),
-    normalizedMaskedPhone: maskPhoneForLog(normalizedPhone),
-    fieldsChecked: jobFields.length,
-    variantsChecked: variants.length,
-    matchedJobCount: docs.size,
-  });
+  const jobQueryStartedAt = Date.now();
+  const normalizedJobsSnapshot = await adminDb.collection('jobs').where('normalizedPhone', '==', normalizedPhone).limit(10).get();
+  normalizedJobsSnapshot.docs.forEach((doc) => docs.set(doc.id, doc));
+  let firestoreMs = elapsedMs(jobQueryStartedAt);
+  let queryCount = 1;
 
-  const customerIds = await linkedCustomerIds(normalizedPhone, variants);
-  for (const customerId of customerIds.slice(0, 10)) {
-    const snapshot = await adminDb.collection('jobs').where('customerId', '==', customerId).limit(10).get();
-    snapshot.docs.forEach((doc) => docs.set(doc.id, doc));
-  }
-  trackDebug({
-    checkpoint: 'linkedCustomerJobQueries:complete',
-    normalizedMaskedPhone: maskPhoneForLog(normalizedPhone),
-    linkedCustomerCount: customerIds.length,
-    matchedJobCount: docs.size,
-  });
+  const customerLookup = await linkedCustomerIds(normalizedPhone);
+  const customerIds = customerLookup.ids;
+  firestoreMs += customerLookup.firestoreMs;
+  queryCount += customerLookup.queryCount;
+
+  const linkedJobStartedAt = Date.now();
+  const linkedJobSnapshots = await Promise.all(
+    customerIds.slice(0, 10).map((customerId) => adminDb.collection('jobs').where('customerId', '==', customerId).limit(10).get()),
+  );
+  linkedJobSnapshots.forEach((snapshot) => snapshot.docs.forEach((doc) => docs.set(doc.id, doc)));
+  firestoreMs += elapsedMs(linkedJobStartedAt);
+  queryCount += Math.min(customerIds.length, 10);
 
   const matchingDocs = () => Array.from(docs.values())
     .filter((doc) => jobMatchesPhone(doc.data() || {}, normalizedPhone) || customerIds.includes(String((doc.data() || {}).customerId || '')));
 
   let matches = matchingDocs();
   if (matches.length === 0) {
-    const recentSnapshot = await adminDb.collection('jobs').orderBy('updatedAt', 'desc').limit(FALLBACK_SCAN_LIMIT).get();
-    recentSnapshot.docs
-      .filter((doc) => jobMatchesPhone(doc.data() || {}, normalizedPhone))
-      .forEach((doc) => docs.set(doc.id, doc));
+    const legacyJobQueryTargets = variants.map((value) => ({ field: 'customerPhone', value }));
+    const uniqueLegacyJobTargets = Array.from(new Map(
+      legacyJobQueryTargets
+        .filter(({ value }) => Boolean(value))
+        .map((target) => [`${target.field}:${target.value}`, target]),
+    ).values());
+    const legacyJobStartedAt = Date.now();
+    const legacySnapshots = await Promise.all(
+      uniqueLegacyJobTargets.map(({ field, value }) => adminDb.collection('jobs').where(field, '==', value).limit(10).get()),
+    );
+    legacySnapshots.forEach((snapshot) => snapshot.docs.forEach((doc) => docs.set(doc.id, doc)));
+    firestoreMs += elapsedMs(legacyJobStartedAt);
+    queryCount += uniqueLegacyJobTargets.length;
     matches = matchingDocs();
-    trackDebug({
-      checkpoint: 'jobFallbackScan:complete',
-      normalizedMaskedPhone: maskPhoneForLog(normalizedPhone),
-      scanned: recentSnapshot.size,
-      matchedJobCount: matches.length,
-      matchedJobIds: matches.slice(0, 3).map((doc) => maskDocId(doc.id)),
-    });
   }
 
-  trackDebug({
-    checkpoint: 'lookup:complete',
-    maskedPhone: maskPhoneForLog(phone),
-    normalizedMaskedPhone: maskPhoneForLog(normalizedPhone),
-    candidateJobCount: docs.size,
-    linkedCustomerMatches: customerIds.length,
-    matchedJobCount: matches.length,
-    matchedJobIds: matches.slice(0, 3).map((doc) => maskDocId(doc.id)),
-    noMatchReason: matches.length === 0 ? 'No job phone/customer phone matched after exact queries and fallback scan.' : undefined,
-  });
-
-  return matches
+  return {
+    jobs: matches
     .sort((left, right) => timestampMillis((right.data() || {}).updatedAt || (right.data() || {}).createdAt) - timestampMillis((left.data() || {}).updatedAt || (left.data() || {}).createdAt))
-    .slice(0, 10);
+    .slice(0, 10),
+    lookupMs: elapsedMs(startedAt),
+    firestoreMs,
+    queryCount,
+    customerMatchCount: customerIds.length,
+  };
 }
 
 async function recordPublicView(doc: FirebaseFirestore.QueryDocumentSnapshot | FirebaseFirestore.DocumentSnapshot) {
@@ -297,6 +258,7 @@ async function recordPublicView(doc: FirebaseFirestore.QueryDocumentSnapshot | F
 }
 
 export async function POST(request: NextRequest) {
+  const requestStartedAt = Date.now();
   try {
     const body = await request.json() as { repairId?: string; trackingCode?: string; phone?: string };
     const repairId = normalizeRepairId(String(body.repairId || ''));
@@ -304,7 +266,7 @@ export async function POST(request: NextRequest) {
     const phone = String(body.phone || '');
 
     trackDebug({
-      checkpoint: 'request:received',
+      checkpoint: 'request:start',
       version: TRACK_LOOKUP_VERSION,
       projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || '',
       collection: 'jobs',
@@ -315,31 +277,68 @@ export async function POST(request: NextRequest) {
     });
 
     if (!repairId && phone) {
-      const jobs = await findJobsByPhone(phone);
-      if (jobs.length === 0) return genericError();
+      const lookup = await findJobsByPhone(phone);
+      const jobs = lookup.jobs;
+      trackDebug({
+        checkpoint: 'lookup:end',
+        lookupType: 'phone',
+        lookupMs: lookup.lookupMs,
+        firestoreMs: lookup.firestoreMs,
+        firestoreQueryCount: lookup.queryCount,
+        customerMatchCount: lookup.customerMatchCount,
+        matchedJobCount: jobs.length,
+        matchedJobIds: jobs.slice(0, 3).map((doc) => maskDocId(doc.id)),
+      });
+      if (jobs.length === 0) {
+        trackDebug({ checkpoint: 'request:end', status: 404, durationMs: elapsedMs(requestStartedAt) });
+        return genericError();
+      }
       if (jobs.length === 1) {
-        await recordPublicView(jobs[0]);
+        void recordPublicView(jobs[0]);
+        trackDebug({ checkpoint: 'request:end', status: 200, durationMs: elapsedMs(requestStartedAt), resultCount: 1 });
         return NextResponse.json({ result: mapPublicJob(jobs[0]), results: [] });
       }
+      trackDebug({ checkpoint: 'request:end', status: 200, durationMs: elapsedMs(requestStartedAt), resultCount: jobs.length });
       return NextResponse.json({ results: jobs.map(mapPublicJob) });
     }
 
-    if (!repairId || !trackingCode) return legacyError();
+    if (!repairId || !trackingCode) {
+      trackDebug({ checkpoint: 'request:end', status: 404, durationMs: elapsedMs(requestStartedAt), lookupType: 'repairId' });
+      return legacyError();
+    }
+    const lookupStartedAt = Date.now();
     const jobDoc = await findJob(repairId);
-    if (!jobDoc?.exists) return legacyError();
+    trackDebug({
+      checkpoint: 'lookup:end',
+      lookupType: 'repairId',
+      lookupMs: elapsedMs(lookupStartedAt),
+      firestoreMs: elapsedMs(lookupStartedAt),
+      firestoreQueryCount: 5,
+      hasJob: Boolean(jobDoc?.exists),
+      jobId: jobDoc?.id ? maskDocId(jobDoc.id) : '',
+    });
+    if (!jobDoc?.exists) {
+      trackDebug({ checkpoint: 'request:end', status: 404, durationMs: elapsedMs(requestStartedAt), lookupType: 'repairId' });
+      return legacyError();
+    }
     const job = jobDoc.data() || {};
     const existingTrackingCode = normalizeTrackingCode(String(job.publicTrackingCode || ''));
-    if (!existingTrackingCode || existingTrackingCode !== trackingCode) return legacyError();
+    if (!existingTrackingCode || existingTrackingCode !== trackingCode) {
+      trackDebug({ checkpoint: 'request:end', status: 404, durationMs: elapsedMs(requestStartedAt), lookupType: 'repairId', reason: 'trackingCodeMismatch' });
+      return legacyError();
+    }
 
-    await recordPublicView(jobDoc);
+    void recordPublicView(jobDoc);
+    trackDebug({ checkpoint: 'request:end', status: 200, durationMs: elapsedMs(requestStartedAt), lookupType: 'repairId', resultCount: 1 });
     return NextResponse.json({ result: mapPublicJob(jobDoc), results: [] });
   } catch (error) {
     trackDebug({
-      checkpoint: 'request:failed',
+      checkpoint: 'request:error',
       version: TRACK_LOOKUP_VERSION,
       projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || '',
       collection: 'jobs',
       method: 'POST',
+      durationMs: elapsedMs(requestStartedAt),
       ...normalizeUnknownError(error),
     });
     return genericError();
