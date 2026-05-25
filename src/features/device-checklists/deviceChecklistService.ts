@@ -21,11 +21,14 @@ import { can } from '@/lib/rbac/can';
 import type { Job, UserData } from '@/types';
 import {
   createDefaultAccessories,
+  createDefaultAfterRepairTestedItems,
   createDefaultChecklistItems,
   createDefaultInternalComponents,
   normalizeAccessories,
+  normalizeAfterRepairTestedItems,
   normalizeChecklistItems,
   normalizeInternalComponents,
+  type AfterRepairTestedItem,
   type DeviceChecklist,
   type DeviceChecklistAccessory,
   type DeviceChecklistInternalComponents,
@@ -46,6 +49,7 @@ function mapChecklist(checklistId: string, data: Record<string, unknown>): Devic
     items: normalizeChecklistItems(data.items),
     accessories: normalizeAccessories(data.accessories, typeof data.accessoriesReceived === 'string' ? data.accessoriesReceived : ''),
     internalComponents: normalizeInternalComponents(data.internalComponents, typeof data.internalComponentInventory === 'string' ? data.internalComponentInventory : ''),
+    testedItems: normalizeAfterRepairTestedItems(data.testedItems),
     disclaimer: typeof data.disclaimer === 'string' && data.disclaimer ? data.disclaimer : defaultDisclaimer,
   };
 }
@@ -92,14 +96,18 @@ function snapshotFromJob(job: Job, customer?: Customer | null, device?: Device |
   };
 }
 
-function latestChecklistFromSnapshot(snapshot: QuerySnapshot<DocumentData>): DeviceChecklist | null {
-  const rows = snapshot.docs.map((row) => mapChecklist(row.id, row.data()));
+function latestChecklistFromSnapshot(snapshot: QuerySnapshot<DocumentData>, checklistType: 'pre_repair' | 'after_repair' = 'pre_repair'): DeviceChecklist | null {
+  const rows = snapshot.docs
+    .map((row) => mapChecklist(row.id, row.data()))
+    .filter((checklist) => checklistType === 'pre_repair'
+      ? !checklist.checklistType || checklist.checklistType === 'pre_repair'
+      : checklist.checklistType === checklistType);
   return rows.sort((left, right) => (right.updatedAt?.toMillis?.() || 0) - (left.updatedAt?.toMillis?.() || 0))[0] || null;
 }
 
-async function queryLatestDeviceChecklist(filters: QueryConstraint[]): Promise<DeviceChecklist | null> {
+async function queryLatestDeviceChecklist(filters: QueryConstraint[], checklistType: 'pre_repair' | 'after_repair' = 'pre_repair'): Promise<DeviceChecklist | null> {
   const snapshot = await getDocs(query(collection(db, 'deviceChecklists'), ...filters));
-  return latestChecklistFromSnapshot(snapshot);
+  return latestChecklistFromSnapshot(snapshot, checklistType);
 }
 
 export async function getDeviceChecklistByJob({
@@ -144,6 +152,48 @@ export async function getDeviceChecklistByJob({
   return queryLatestDeviceChecklist([where('jobId', '==', jobId)]);
 }
 
+export async function getAfterRepairChecklistByJob({
+  jobId,
+  user,
+  jobBranchId,
+  jobTechnicianId,
+}: DeviceChecklistJobLookup): Promise<DeviceChecklist | null> {
+  if (!can(user.role, 'jobs.view.all') && !can(user.role, 'jobs.view.assigned')) throw new Error('Job access required');
+
+  if (user.role === 'manager') {
+    return queryLatestDeviceChecklist([
+      where('jobId', '==', jobId),
+      where('branchId', '==', user.branchId),
+    ], 'after_repair');
+  }
+
+  if (user.role === 'technician') {
+    const assignedChecklist = await queryLatestDeviceChecklist([
+      where('jobId', '==', jobId),
+      where('assignedTechnicianId', '==', user.uid),
+    ], 'after_repair');
+    if (assignedChecklist || jobTechnicianId !== user.uid || !jobBranchId) return assignedChecklist;
+
+    try {
+      return await queryLatestDeviceChecklist([
+        where('jobId', '==', jobId),
+        where('branchId', '==', jobBranchId),
+      ], 'after_repair');
+    } catch {
+      return null;
+    }
+  }
+
+  if (jobBranchId) {
+    return queryLatestDeviceChecklist([
+      where('jobId', '==', jobId),
+      where('branchId', '==', jobBranchId),
+    ], 'after_repair');
+  }
+
+  return queryLatestDeviceChecklist([where('jobId', '==', jobId)], 'after_repair');
+}
+
 export async function createDeviceChecklistFromJob(
   job: Job,
   user: UserData,
@@ -163,6 +213,7 @@ export async function createDeviceChecklistFromJob(
   const snapshot = snapshotFromJob(job, input.customer, input.device);
   const checklistRef = await addDoc(collection(db, 'deviceChecklists'), {
     ...snapshot,
+    checklistType: 'pre_repair',
     importedFromJob: true,
     importedFromCustomer: Boolean(input.customer?.customerId || job.customerId),
     importedFromDevice: Boolean(input.device?.deviceId || job.deviceId),
@@ -201,6 +252,87 @@ export async function createDeviceChecklistFromJob(
     });
   }
   return checklistRef.id;
+}
+
+export async function completeAfterRepairChecklist(
+  job: Job,
+  user: UserData,
+  input: {
+    checklist?: DeviceChecklist | null;
+    testedItems: AfterRepairTestedItem[];
+    remarks?: string;
+  },
+): Promise<string> {
+  if (!canManageChecklist(job, user)) throw new Error('You do not have permission to complete this after repair checklist');
+  const snapshot = snapshotFromJob(job);
+  const normalizedItems = normalizeAfterRepairTestedItems(input.testedItems || createDefaultAfterRepairTestedItems());
+  const issueItem = normalizedItems.find((item) => item.status === 'issue');
+  if (issueItem) throw new Error(`${issueItem.label} must be resolved or marked N/A before Ready for Pickup.`);
+  const now = serverTimestamp();
+  const remarks = String(input.remarks || '').trim();
+  let checklistId = input.checklist?.checklistId || '';
+
+  if (!checklistId) {
+    const checklistRef = await addDoc(collection(db, 'deviceChecklists'), {
+      ...snapshot,
+      checklistType: 'after_repair',
+      importedFromJob: true,
+      importedFromCustomer: Boolean(snapshot.customerId),
+      importedFromDevice: Boolean(snapshot.deviceId),
+      items: [],
+      accessories: [],
+      internalComponents: {},
+      externalConditionSummary: '',
+      functionalChecklist: '',
+      accessoriesReceived: (job as Job & { accessoriesReceived?: string }).accessoriesReceived || '',
+      internalComponentInventory: '',
+      disclaimer: defaultDisclaimer,
+      checklistStatus: 'draft',
+      testedItems: normalizedItems,
+      remarks,
+      technicianId: user.uid,
+      createdBy: user.uid,
+      createdByDisplayName: displayNameForUser(user),
+      createdAt: now,
+      updatedAt: now,
+    });
+    checklistId = checklistRef.id;
+  }
+
+  await updateDoc(doc(db, 'deviceChecklists', checklistId), {
+    ...snapshot,
+    checklistType: 'after_repair',
+    importedFromJob: true,
+    importedFromCustomer: Boolean(snapshot.customerId),
+    importedFromDevice: Boolean(snapshot.deviceId),
+    checklistStatus: 'completed',
+    testedItems: normalizedItems,
+    remarks,
+    technicianId: user.uid,
+    completedAt: serverTimestamp(),
+    technicianVerification: {
+      technicianId: job.technicianId || user.uid,
+      technicianName: displayNameForUser(user),
+      technicianRole: user.role,
+      branchId: user.branchId || job.branchId || '',
+      checkedAt: serverTimestamp(),
+      authUid: user.uid,
+      verificationText,
+    },
+    updatedAt: serverTimestamp(),
+  });
+
+  await writeAuditLog({
+    entityType: 'device_checklist',
+    entityId: checklistId,
+    action: 'device_checklist_final_checked',
+    changedBy: user.uid,
+    changedByDisplayName: displayNameForUser(user),
+    changes: [{ field: 'checklistType', before: input.checklist?.checklistType || null, after: 'after_repair' }],
+    note: 'After Repair Checklist completed before Ready for Pickup',
+  }).catch(() => undefined);
+
+  return checklistId;
 }
 
 export async function updateDeviceChecklistStaffDetails(

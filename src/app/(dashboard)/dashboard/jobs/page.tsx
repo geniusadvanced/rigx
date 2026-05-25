@@ -50,8 +50,10 @@ import {
 import type { Customer, CustomerBranch, Device } from '@/features/customers/types';
 import {
   buildDeviceChecklistWhatsAppLink,
+  completeAfterRepairChecklist,
   createDeviceChecklistFromJob,
   ensureDeviceChecklistSignatureToken,
+  getAfterRepairChecklistByJob,
   getDeviceChecklistByJob,
   markDeviceChecklistSentWhatsApp,
   overrideDeviceChecklistSignature,
@@ -60,14 +62,17 @@ import {
 import {
   accessoryAfterStatusOptions,
   accessoryBeforeStatusOptions,
+  createDefaultAfterRepairTestedItems,
   createDefaultAccessories,
   createDefaultChecklistItems,
   createDefaultInternalComponents,
   inspectionStatusOptions,
   internalComponentStatusOptions,
   normalizeAccessories,
+  normalizeAfterRepairTestedItems,
   normalizeChecklistItems,
   normalizeInternalComponents,
+  type AfterRepairTestedItem,
   type DeviceChecklist,
   type DeviceChecklistAccessory,
   type DeviceChecklistInternalComponents,
@@ -88,6 +93,7 @@ import {
   createJobDocumentRecord,
   calculateWarrantyEndDate,
   deleteJobDocumentRecord,
+  ensureJobWarrantySignatureToken,
   geniusAdvancedWarrantyPolicyText,
   getJobDocumentRecords,
   getWarrantyStatus,
@@ -542,6 +548,11 @@ interface DeviceChecklistFormState {
   internalComponentInventory: string;
 }
 
+interface AfterRepairChecklistFormState {
+  testedItems: AfterRepairTestedItem[];
+  remarks: string;
+}
+
 function createDeviceChecklistFormDefaults(overrides: Partial<DeviceChecklistFormState> = {}): DeviceChecklistFormState {
   return {
     customerId: '',
@@ -555,6 +566,57 @@ function createDeviceChecklistFormDefaults(overrides: Partial<DeviceChecklistFor
     internalComponentInventory: '',
     ...overrides,
   };
+}
+
+function createAfterRepairChecklistFormDefaults(overrides: Partial<AfterRepairChecklistFormState> = {}): AfterRepairChecklistFormState {
+  return {
+    testedItems: createDefaultAfterRepairTestedItems(),
+    remarks: '',
+    ...overrides,
+  };
+}
+
+function afterRepairChecklistCompleted(checklist?: DeviceChecklist | null): boolean {
+  return checklist?.checklistType === 'after_repair'
+    && checklist.checklistStatus === 'completed'
+    && Boolean(checklist.completedAt);
+}
+
+interface ScrollAnchorSnapshot {
+  element: Element | null;
+  top: number;
+  scrollX: number;
+  scrollY: number;
+}
+
+function captureScrollAnchor(): ScrollAnchorSnapshot {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return { element: null, top: 0, scrollX: 0, scrollY: 0 };
+  }
+
+  const element = document.activeElement instanceof Element ? document.activeElement : null;
+  return {
+    element,
+    top: element?.getBoundingClientRect().top ?? 0,
+    scrollX: window.scrollX,
+    scrollY: window.scrollY,
+  };
+}
+
+function restoreScrollAnchor(snapshot: ScrollAnchorSnapshot) {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (snapshot.element && document.contains(snapshot.element)) {
+        const nextTop = snapshot.element.getBoundingClientRect().top;
+        window.scrollBy({ top: nextTop - snapshot.top, left: 0, behavior: 'auto' });
+        return;
+      }
+
+      window.scrollTo({ top: snapshot.scrollY, left: snapshot.scrollX, behavior: 'auto' });
+    });
+  });
 }
 
 export default function JobsPage() {
@@ -665,10 +727,13 @@ export default function JobsPage() {
   const [customerDataLoading, setCustomerDataLoading] = useState(false);
   const [customerLookup, setCustomerLookup] = useState('');
   const [deviceChecklist, setDeviceChecklist] = useState<DeviceChecklist | null>(null);
+  const [afterRepairChecklist, setAfterRepairChecklist] = useState<DeviceChecklist | null>(null);
   const [showDeviceChecklistEditor, setShowDeviceChecklistEditor] = useState(false);
+  const [showAfterRepairChecklistEditor, setShowAfterRepairChecklistEditor] = useState(false);
   const [deviceChecklistCustomerSearch, setDeviceChecklistCustomerSearch] = useState('');
   const [deviceChecklistOverrideReason, setDeviceChecklistOverrideReason] = useState('');
   const [deviceChecklistForm, setDeviceChecklistForm] = useState<DeviceChecklistFormState>(() => createDeviceChecklistFormDefaults());
+  const [afterRepairChecklistForm, setAfterRepairChecklistForm] = useState<AfterRepairChecklistFormState>(() => createAfterRepairChecklistFormDefaults());
   const [newJob, setNewJob] = useState<Omit<CreateJobInput, 'createdBy' | 'creatorRole' | 'totalSale'> & { totalSale: string; customerEmail: string; customerAddress: string }>({
     customerId: null,
     customerNumber: '',
@@ -1059,6 +1124,17 @@ export default function JobsPage() {
           return null;
         })
         : null;
+      const afterRepairChecklistResult = profile
+        ? await getAfterRepairChecklistByJob({
+          jobId: job.docId,
+          user: profile,
+          jobBranchId: job.branchId,
+          jobTechnicianId: job.technicianId,
+        }).catch((checklistError) => {
+          console.error('Unable to load after repair checklist', checklistError);
+          return null;
+        })
+        : null;
       const nextDocuments = documentsResult.status === 'fulfilled' ? documentsResult.value : [];
       const nextExtractions = extractionsResult.status === 'fulfilled' ? extractionsResult.value : [];
       const nextFinancial = financialResult.status === 'fulfilled' ? financialResult.value : null;
@@ -1098,6 +1174,7 @@ export default function JobsPage() {
       setLinkedPosWarranties(linkedPosWarrantiesResult);
       setJobQuotationActions(jobQuotationActionsResult);
       setDeviceChecklist(deviceChecklistResult);
+      setAfterRepairChecklist(afterRepairChecklistResult);
 
       try {
         const nextPreview = await buildJobFinancialPreview(job.docId);
@@ -1193,6 +1270,13 @@ export default function JobsPage() {
       internalComponentInventory: deviceChecklist.internalComponentInventory || '',
     }));
   }, [deviceChecklist, selectedJob]);
+
+  useEffect(() => {
+    setAfterRepairChecklistForm(createAfterRepairChecklistFormDefaults({
+      testedItems: normalizeAfterRepairTestedItems(afterRepairChecklist?.testedItems),
+      remarks: afterRepairChecklist?.remarks || '',
+    }));
+  }, [afterRepairChecklist]);
 
   useEffect(() => {
     if (!profile?.branchId) return;
@@ -1801,6 +1885,11 @@ export default function JobsPage() {
       setMessage('Customer Device Checklist signature is required before repair can proceed. Admin/manager can override with a reason if the customer is unavailable.');
       return;
     }
+    if (nextStatus === 'ready_for_pickup' && !afterRepairChecklistCompleted(afterRepairChecklist)) {
+      setShowAfterRepairChecklistEditor(true);
+      setMessage('Please complete After Repair Checklist before marking this device as Ready for Pickup.');
+      return;
+    }
 
     setActionLoading(true);
     setMessage('');
@@ -2167,23 +2256,29 @@ export default function JobsPage() {
     }
   }
 
-  function handleWhatsAppSupportDocument(record: JobDocumentRecord) {
-    if (!selectedJob) return;
+  async function handleWhatsAppSupportDocument(record: JobDocumentRecord) {
+    if (!selectedJob || !profile) return;
     if (!selectedJob.customerPhone) {
       setMessage('Customer phone number is missing. Please update customer details first.');
       return;
     }
 
     const jobNumber = getDisplayJobNumber(selectedJob);
-    const message = record.type === 'warranty'
-      ? buildWarrantyWhatsAppMessage({
+    setActionLoading(true);
+    try {
+      const warrantyToken = record.type === 'warranty'
+        ? await ensureJobWarrantySignatureToken(record, profile)
+        : '';
+      const message = record.type === 'warranty'
+        ? buildWarrantyWhatsAppMessage({
           customerName: selectedJob.customerName,
           itemName: record.title || jobDeviceInfo(selectedJob),
           deviceId: jobDeviceInfo(selectedJob),
           jobId: jobNumber,
           warrantyDurationDays: record.warrantyPeriodDays || null,
+          publicWarrantyToken: warrantyToken,
         })
-      : buildRepairStatusWhatsAppMessage({
+        : buildRepairStatusWhatsAppMessage({
           customerName: selectedJob.customerName,
           jobNumber,
           deviceInfo: jobDeviceInfo(selectedJob),
@@ -2191,11 +2286,22 @@ export default function JobsPage() {
           documentLink: record.fileUrl,
         });
 
-    window.open(
-      buildWaMeLink({ branch: selectedJob.branchId, recipientPhone: selectedJob.customerPhone, message }),
-      '_blank',
-      'noopener,noreferrer',
-    );
+      window.open(
+        buildWaMeLink({ branch: selectedJob.branchId, recipientPhone: selectedJob.customerPhone, message }),
+        '_blank',
+        'noopener,noreferrer',
+      );
+      if (record.type === 'warranty') {
+        setJobDocumentRecords((current) => current.map((row) => (
+          row.documentId === record.documentId ? { ...row, publicWarrantyToken: warrantyToken, publicWarrantyTokenStatus: 'active' } : row
+        )));
+        setMessage('Job Warranty signature WhatsApp link opened.');
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to prepare warranty signature link');
+    } finally {
+      setActionLoading(false);
+    }
   }
 
   async function handleSendPosWarrantyTerms(warranty: PosWarranty) {
@@ -2349,12 +2455,14 @@ export default function JobsPage() {
       return;
     }
 
+    const scrollAnchor = captureScrollAnchor();
     setActionLoading(true);
     setMessage('');
     try {
       const selectedCustomer = deviceChecklistCustomer || undefined;
       const selectedDevice = deviceChecklistDevice || undefined;
       let checklist = deviceChecklist;
+      const createdAt = Timestamp.now();
       if (!checklist) {
         const checklistId = await createDeviceChecklistFromJob(selectedJob, profile, {
           customer: selectedCustomer,
@@ -2374,6 +2482,7 @@ export default function JobsPage() {
           customerId: selectedCustomer?.customerId || selectedJob.customerId || '',
           customerNameSnapshot: selectedCustomer?.fullName || selectedJob.customerName || '',
           customerPhoneSnapshot: selectedCustomer?.phone || selectedJob.customerPhone || '',
+          customerEmailSnapshot: selectedCustomer?.email || (selectedJob as Job & { customerEmail?: string }).customerEmail || '',
           deviceId: selectedDevice?.deviceId || selectedJob.deviceId || '',
           deviceCategorySnapshot: selectedDevice?.deviceType || selectedJob.deviceType || '',
           deviceBrandModelSnapshot: selectedDevice ? [selectedDevice.brand, selectedDevice.model].filter(Boolean).join(' ') : jobDeviceInfo(selectedJob),
@@ -2396,8 +2505,8 @@ export default function JobsPage() {
           checklistStatus: 'draft',
           createdBy: profile.uid,
           createdByDisplayName: profile.displayName || profile.name || profile.email || '',
-          createdAt: Timestamp.now(),
-          updatedAt: Timestamp.now(),
+          createdAt,
+          updatedAt: createdAt,
         };
       }
 
@@ -2416,9 +2525,47 @@ export default function JobsPage() {
         });
       }
 
-      await refreshJobDetails(selectedJob);
-      setShowDeviceChecklistEditor(false);
-      setMessage(completeByStaff ? 'Device Checklist completed by staff.' : 'Device Checklist created.');
+      const updatedAt = Timestamp.now();
+      setDeviceChecklist({
+        ...checklist,
+        customerId: selectedCustomer?.customerId || selectedJob.customerId || '',
+        customerNameSnapshot: selectedCustomer?.fullName || selectedJob.customerName || '',
+        customerPhoneSnapshot: selectedCustomer?.phone || selectedJob.customerPhone || '',
+        customerEmailSnapshot: selectedCustomer?.email || (selectedJob as Job & { customerEmail?: string }).customerEmail || '',
+        deviceId: selectedDevice?.deviceId || selectedJob.deviceId || '',
+        deviceCategorySnapshot: selectedDevice?.deviceType || selectedJob.deviceType || selectedJob.device || '',
+        deviceBrandModelSnapshot: selectedDevice ? [selectedDevice.brand, selectedDevice.model].filter(Boolean).join(' ') : jobDeviceInfo(selectedJob),
+        deviceSerialOrImeiSnapshot: selectedDevice?.serialNumber || selectedDevice?.imei || selectedJob.serialNumber || '',
+        reportedIssueSnapshot: selectedJob.issueDescription || '',
+        branchId: selectedJob.branchId || '',
+        assignedTechnicianId: selectedJob.technicianId || '',
+        assignedTechnicianName: selectedJob.technicianName || '',
+        importedFromJob: true,
+        importedFromCustomer: Boolean(selectedCustomer?.customerId || selectedJob.customerId),
+        importedFromDevice: Boolean(selectedDevice?.deviceId || selectedJob.deviceId),
+        items: normalizeChecklistItems(deviceChecklistForm.items),
+        accessories: normalizeAccessories(deviceChecklistForm.accessories, deviceChecklistForm.accessoriesReceived),
+        internalComponents: normalizeInternalComponents(deviceChecklistForm.internalComponents, deviceChecklistForm.internalComponentInventory),
+        externalConditionSummary: deviceChecklistForm.externalConditionSummary.trim(),
+        functionalChecklist: deviceChecklistForm.functionalChecklist.trim(),
+        accessoriesReceived: deviceChecklistForm.accessoriesReceived.trim(),
+        internalComponentInventory: deviceChecklistForm.internalComponentInventory.trim(),
+        checklistStatus: completeByStaff ? 'staff_completed' : 'draft',
+        technicianVerification: completeByStaff
+          ? {
+              technicianId: selectedJob.technicianId || profile.uid,
+              technicianName: profile.displayName || profile.name || profile.email || 'Unknown User',
+              technicianRole: profile.role,
+              branchId: profile.branchId || selectedJob.branchId || '',
+              checkedAt: updatedAt,
+              authUid: profile.uid,
+              verificationText: 'Auto verified by RIGX System',
+            }
+          : checklist.technicianVerification,
+        updatedAt,
+      });
+      setMessage(completeByStaff ? 'Device Checklist completed by staff.' : 'Device Checklist saved.');
+      restoreScrollAnchor(scrollAnchor);
     } catch (error) {
       console.error('[DEVICE CHECKLIST SAVE ERROR]', {
         action: completeByStaff ? 'complete_device_checklist_staff' : 'create_device_checklist',
@@ -2429,6 +2576,88 @@ export default function JobsPage() {
         error: loggableError(error),
       });
       setMessage(error instanceof Error ? error.message : 'Unable to save Device Checklist.');
+      restoreScrollAnchor(scrollAnchor);
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function handleCompleteAfterRepairChecklist() {
+    if (!selectedJob || !profile) {
+      setMessage('Please select a job first.');
+      return;
+    }
+    if (!canUploadForSelectedJob) {
+      setMessage('You are not allowed to complete this After Repair Checklist.');
+      return;
+    }
+
+    const scrollAnchor = captureScrollAnchor();
+    setActionLoading(true);
+    setMessage('');
+    try {
+      const checklistId = await completeAfterRepairChecklist(selectedJob, profile, {
+        checklist: afterRepairChecklist,
+        testedItems: afterRepairChecklistForm.testedItems,
+        remarks: afterRepairChecklistForm.remarks,
+      });
+      setMessage('After Repair Checklist completed.');
+      const completedAt = Timestamp.now();
+      setAfterRepairChecklist((current) => ({
+        ...(current || {
+          checklistId,
+          jobId: selectedJob.docId,
+          jobNumber: getDisplayJobNumber(selectedJob),
+          customerId: selectedJob.customerId || '',
+          customerNameSnapshot: selectedJob.customerName || '',
+          customerPhoneSnapshot: selectedJob.customerPhone || '',
+          deviceCategorySnapshot: selectedJob.deviceType || selectedJob.device || '',
+          deviceBrandModelSnapshot: jobDeviceInfo(selectedJob),
+          deviceSerialOrImeiSnapshot: selectedJob.serialNumber || '',
+          reportedIssueSnapshot: selectedJob.issueDescription || '',
+          branchId: selectedJob.branchId || '',
+          importedFromJob: true,
+          importedFromCustomer: Boolean(selectedJob.customerId),
+          importedFromDevice: Boolean(selectedJob.deviceId),
+          externalConditionSummary: '',
+          functionalChecklist: '',
+          accessoriesReceived: '',
+          internalComponentInventory: '',
+          disclaimer: '',
+          createdBy: profile.uid,
+          createdByDisplayName: profile.displayName || profile.name || profile.email || '',
+          createdAt: completedAt,
+        }),
+        checklistId,
+        checklistType: 'after_repair',
+        checklistStatus: 'completed',
+        technicianId: profile.uid,
+        completedAt,
+        testedItems: afterRepairChecklistForm.testedItems,
+        remarks: afterRepairChecklistForm.remarks.trim(),
+        technicianVerification: {
+          technicianId: selectedJob.technicianId || profile.uid,
+          technicianName: profile.displayName || profile.name || profile.email || 'Unknown User',
+          technicianRole: profile.role,
+          branchId: profile.branchId || selectedJob.branchId || '',
+          checkedAt: completedAt,
+          authUid: profile.uid,
+          verificationText: 'Auto verified by RIGX System',
+        },
+        updatedAt: completedAt,
+      }));
+      restoreScrollAnchor(scrollAnchor);
+    } catch (error) {
+      console.error('[AFTER REPAIR CHECKLIST SAVE ERROR]', {
+        action: 'complete_after_repair_checklist',
+        jobId: selectedJob.docId,
+        userId: profile.uid,
+        role: profile.role,
+        branchId: profile.branchId,
+        error: loggableError(error),
+      });
+      setMessage(error instanceof Error ? error.message : 'Unable to complete After Repair Checklist.');
+      restoreScrollAnchor(scrollAnchor);
     } finally {
       setActionLoading(false);
     }
@@ -4591,6 +4820,81 @@ export default function JobsPage() {
             ) : null}
           </div>
 
+          {['repair_completed', 'ready_for_pickup', 'delivered', 'warranty_active', 'warranty_expired'].includes(getCurrentRepairLifecycleStatus(selectedJob)) ? (
+            <div className="mt-4 rounded-md border border-white/10 bg-[#050505] p-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="font-medium text-white">After Repair Checklist</div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    Status:{' '}
+                    <span className={`rounded-full border px-2 py-1 ${afterRepairChecklistCompleted(afterRepairChecklist) ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/40 bg-amber-500/10 text-amber-200'}`}>
+                      {afterRepairChecklistCompleted(afterRepairChecklist) ? 'Completed' : 'Required before Ready for Pickup'}
+                    </span>
+                  </div>
+                  {afterRepairChecklist?.completedAt ? (
+                    <div className="mt-1 text-xs text-emerald-300">Completed: {formatTimestamp(afterRepairChecklist.completedAt)}</div>
+                  ) : (
+                    <div className="mt-2 text-xs text-amber-300">Please complete After Repair Checklist before marking this device as Ready for Pickup.</div>
+                  )}
+                </div>
+                {canUploadForSelectedJob ? (
+                  <button
+                    type="button"
+                    disabled={actionLoading}
+                    onClick={() => setShowAfterRepairChecklistEditor((current) => !current)}
+                    className="rounded-md border border-orange-500/30 px-3 py-2 text-xs font-medium text-orange-200 disabled:opacity-60"
+                  >
+                    {afterRepairChecklistCompleted(afterRepairChecklist) ? 'Review Checklist' : 'Open After Repair Checklist'}
+                  </button>
+                ) : null}
+              </div>
+
+              {showAfterRepairChecklistEditor ? (
+                <div className="mt-4 rounded-md border border-white/10 bg-[#0B0B0B] p-3">
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {afterRepairChecklistForm.testedItems.map((item, itemIndex) => (
+                      <label key={item.key} className="grid gap-1 text-xs text-slate-400">
+                        {item.label}
+                        <select
+                          value={item.status}
+                          onChange={(event) => setAfterRepairChecklistForm((current) => ({
+                            ...current,
+                            testedItems: current.testedItems.map((row, index) => index === itemIndex ? { ...row, status: event.target.value as AfterRepairTestedItem['status'] } : row),
+                          }))}
+                          className="rounded-md border border-white/10 bg-[#151515] px-2 py-2 text-xs text-white"
+                        >
+                          <option value="passed">Passed</option>
+                          <option value="issue">Issue</option>
+                          <option value="na">N/A</option>
+                        </select>
+                      </label>
+                    ))}
+                  </div>
+                  <label className="mt-3 grid gap-1 text-xs text-slate-400">
+                    Remarks
+                    <textarea
+                      value={afterRepairChecklistForm.remarks}
+                      onChange={(event) => setAfterRepairChecklistForm((current) => ({ ...current, remarks: event.target.value }))}
+                      rows={3}
+                      placeholder="Optional remarks"
+                      className="rounded-md border border-white/10 bg-[#151515] px-3 py-2 text-sm text-white outline-none focus:border-orange-500/35"
+                    />
+                  </label>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={actionLoading}
+                      onClick={handleCompleteAfterRepairChecklist}
+                      className="rounded-md bg-orange-500 px-3 py-2 text-xs font-semibold text-black disabled:opacity-60"
+                    >
+                      Complete After Repair Checklist
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
           <div className="mt-4 rounded-md border border-white/10 bg-[#050505] p-3">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -5048,13 +5352,17 @@ export default function JobsPage() {
                         key={nextStatus}
                         type="button"
                         onClick={() => handleStatusChange(nextStatus)}
-                        disabled={actionLoading}
+                        disabled={actionLoading || (nextStatus === 'ready_for_pickup' && !afterRepairChecklistCompleted(afterRepairChecklist))}
+                        title={nextStatus === 'ready_for_pickup' && !afterRepairChecklistCompleted(afterRepairChecklist) ? 'Please complete After Repair Checklist before marking this device as Ready for Pickup.' : undefined}
                         className="rounded-md border border-orange-500/30 px-3 py-2 text-xs font-medium text-orange-200 hover:bg-[#F97316]/10 disabled:opacity-60"
                       >
                         {nextStatus === 'ready_for_pickup' ? 'Ready for Pickup + WhatsApp' : repairLifecycleActionLabels[nextStatus]}
                       </button>
                     ))}
                   </div>
+                  {allowedNextStatuses.includes('ready_for_pickup') && !afterRepairChecklistCompleted(afterRepairChecklist) ? (
+                    <div className="mt-2 text-xs text-amber-300">Please complete After Repair Checklist before marking this device as Ready for Pickup.</div>
+                  ) : null}
                 </div>
               ) : (
                 <div className="text-sm text-slate-500">No available status actions</div>
@@ -5571,7 +5879,7 @@ export default function JobsPage() {
                 </div>
               ) : null}
 
-              {supportDocumentTab === 'warranty' ? (
+              {supportDocumentTab === 'warranty' && !jobDocumentRecords.some((record) => record.type === 'warranty') ? (
                 <div className="mb-3 rounded-md border border-orange-500/25 bg-orange-500/5 p-3">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
@@ -5624,8 +5932,7 @@ export default function JobsPage() {
                     </div>
                   ) : (
                     <div className="mt-3 rounded-md border border-white/10 bg-[#050505] p-3 text-xs text-slate-400">
-                      No POS warranty agreement found. Warranty terms signing becomes available after a paid invoice activates warranty.
-                      <div className="mt-1 text-slate-500">Create/complete invoice payment first to activate POS warranty.</div>
+                      POS Warranty Agreement is only needed for standalone POS product/accessory sales.
                     </div>
                   )}
                 </div>
@@ -5766,6 +6073,7 @@ export default function JobsPage() {
                   .filter((record) => record.type === supportDocumentTab)
                   .map((record) => {
                     const warrantyStatus = getWarrantyStatus(record);
+                    const warrantySigned = Boolean(record.acceptedTerms || record.warrantySignedAt);
                     return (
                       <div key={record.documentId} className="rounded-md border border-white/10 bg-[#151515] p-3 text-sm">
                         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -5797,6 +6105,14 @@ export default function JobsPage() {
                                 <div className="mt-1 text-xs text-slate-400">
                                   Unlimited claims within active warranty period, subject to inspection and verification.
                                 </div>
+                                <div className={`mt-2 text-xs ${warrantySigned ? 'text-emerald-300' : 'text-amber-300'}`}>
+                                  {warrantySigned
+                                    ? `Signed / Approved${record.warrantySignedName ? ` by ${record.warrantySignedName}` : ''}`
+                                    : 'Pending Customer Signature'}
+                                </div>
+                                {warrantyStatus === 'active' && !warrantySigned ? (
+                                  <div className="mt-1 text-xs text-amber-300">Warranty is active but pending customer acknowledgement.</div>
+                                ) : null}
                                 <details className="mt-2 rounded-md border border-white/10 bg-[#050505] p-3 text-xs text-slate-400">
                                   <summary className="cursor-pointer font-medium text-slate-200">Warranty Terms & Conditions</summary>
                                   <div className="mt-2 whitespace-pre-line leading-5">
@@ -5810,10 +6126,11 @@ export default function JobsPage() {
                             {['service_report', 'warranty'].includes(record.type) ? (
                               <button
                                 type="button"
-                                onClick={() => handleWhatsAppSupportDocument(record)}
+                                disabled={actionLoading}
+                                onClick={() => void handleWhatsAppSupportDocument(record)}
                                 className="rounded-md border border-orange-500/30 px-3 py-1.5 text-xs text-orange-200"
                               >
-                                {record.type === 'warranty' ? 'Send Warranty Document via WhatsApp' : 'Send Service Report via WhatsApp'}
+                                {record.type === 'warranty' ? 'Send Job Warranty for Signature via WhatsApp' : 'Send Service Report via WhatsApp'}
                               </button>
                             ) : null}
                             {record.fileUrl ? (

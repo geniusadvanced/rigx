@@ -3,9 +3,9 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { downloadInvoicePdf } from '@/features/pos/generatePosPdf';
-import { buildInvoiceWhatsAppLink, buildInvoiceWhatsAppMessage, ensureInvoicePaymentToken, getInvoices, voidInvoice } from '@/features/pos/posService';
-import { sendPosWhatsAppBusinessMessage } from '@/features/pos/whatsappService';
-import type { PosInvoice } from '@/features/pos/types';
+import { buildInvoiceWhatsAppLink, ensureInvoicePaymentToken, ensureInvoiceWarrantySignatureTarget, ensureWarrantySignatureToken, getInvoices, getWarranties, voidInvoice } from '@/features/pos/posService';
+import { buildInvoiceWithWarrantyWhatsAppLink, buildInvoiceWithWarrantyWhatsAppMessage, sendPosWhatsAppBusinessMessage } from '@/features/pos/whatsappService';
+import type { PosInvoice, PosWarranty } from '@/features/pos/types';
 import { useUser } from '@/lib/hooks/useUser';
 import { can } from '@/lib/rbac/can';
 
@@ -16,6 +16,7 @@ function formatCurrency(value: number): string {
 export default function PosInvoicesPage() {
   const { firebaseUser, profile, loading } = useUser();
   const [invoices, setInvoices] = useState<PosInvoice[]>([]);
+  const [warranties, setWarranties] = useState<PosWarranty[]>([]);
   const [message, setMessage] = useState('');
   const [voidTarget, setVoidTarget] = useState<PosInvoice | null>(null);
   const [voidReason, setVoidReason] = useState('');
@@ -26,10 +27,54 @@ export default function PosInvoicesPage() {
   async function loadInvoices() {
     if (!profile || !canOperate) return;
     try {
-      setInvoices(await getInvoices(profile));
+      const [invoiceRows, warrantyRows] = await Promise.all([
+        getInvoices(profile),
+        getWarranties(profile),
+      ]);
+      setInvoices(invoiceRows);
+      setWarranties(warrantyRows);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to load invoices');
     }
+  }
+
+  function appOrigin(): string {
+    return process.env.NEXT_PUBLIC_APP_URL || window.location.origin;
+  }
+
+  function invoiceLink(token: string): string {
+    return `${appOrigin()}/invoice/${token}`;
+  }
+
+  function warrantyLink(token: string): string {
+    return `${appOrigin()}/warranty/${token}`;
+  }
+
+  async function prepareInvoiceLinks(invoice: PosInvoice): Promise<{
+    invoice: PosInvoice;
+    warranty: PosWarranty;
+    invoiceLink: string;
+    warrantyLink: string;
+  }> {
+    if (!profile) throw new Error('User profile is required');
+    const [invoiceToken, warrantyTarget] = await Promise.all([
+      ensureInvoicePaymentToken(invoice.invoiceId, profile),
+      ensureInvoiceWarrantySignatureTarget(invoice, profile),
+    ]);
+    const warrantyToken = await ensureWarrantySignatureToken(warrantyTarget, profile);
+    return {
+      invoice: { ...invoice, publicPaymentToken: invoiceToken },
+      warranty: { ...warrantyTarget, publicWarrantyToken: warrantyToken },
+      invoiceLink: invoiceLink(invoiceToken),
+      warrantyLink: warrantyLink(warrantyToken),
+    };
+  }
+
+  function warrantySignatureStatus(invoice: PosInvoice): string {
+    if (invoice.jobId) return 'Job Warranty';
+    const invoiceWarranties = warranties.filter((warranty) => warranty.invoiceId === invoice.invoiceId && warranty.status !== 'void');
+    if (invoiceWarranties.some((warranty) => warranty.acceptedTerms || warranty.warrantyTermsAccepted || warranty.warrantySignedAt)) return 'Signed';
+    return 'Pending Signature';
   }
 
   useEffect(() => {
@@ -59,8 +104,18 @@ export default function PosInvoicesPage() {
     if (!profile) return;
     setActionLoading(true);
     try {
-      const token = await ensureInvoicePaymentToken(invoice.invoiceId, profile);
-      window.open(buildInvoiceWhatsAppLink({ ...invoice, publicPaymentToken: token }), '_blank', 'noopener,noreferrer');
+      if (invoice.jobId) {
+        const token = await ensureInvoicePaymentToken(invoice.invoiceId, profile);
+        window.open(buildInvoiceWhatsAppLink({ ...invoice, publicPaymentToken: token }), '_blank', 'noopener,noreferrer');
+        await loadInvoices();
+        return;
+      }
+      const prepared = await prepareInvoiceLinks(invoice);
+      window.open(buildInvoiceWithWarrantyWhatsAppLink({
+        invoice: prepared.invoice,
+        invoiceLink: prepared.invoiceLink,
+        warrantySignatureLink: prepared.warrantyLink,
+      }), '_blank', 'noopener,noreferrer');
       await loadInvoices();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to prepare WhatsApp invoice link');
@@ -73,16 +128,22 @@ export default function PosInvoicesPage() {
     if (!firebaseUser || !profile) return;
     setActionLoading(true);
     try {
-      const token = await ensureInvoicePaymentToken(invoice.invoiceId, profile);
-      const nextInvoice = { ...invoice, publicPaymentToken: token };
+      if (invoice.jobId) {
+        setMessage('Linked repair job invoices use Job Warranty. Send warranty signature from the Job Warranty section.');
+        return;
+      }
+      const prepared = await prepareInvoiceLinks(invoice);
       const idToken = await firebaseUser.getIdToken();
       const result = await sendPosWhatsAppBusinessMessage({
-        branchId: nextInvoice.branchId,
-        recipientPhone: nextInvoice.customerPhone,
-        message: buildInvoiceWhatsAppMessage(nextInvoice),
+        branchId: prepared.invoice.branchId,
+        recipientPhone: prepared.invoice.customerPhone,
+        message: buildInvoiceWithWarrantyWhatsAppMessage({
+          invoiceLink: prepared.invoiceLink,
+          warrantySignatureLink: prepared.warrantyLink,
+        }),
         messageType: 'invoice',
         relatedEntityType: 'invoice',
-        relatedEntityId: nextInvoice.invoiceId,
+        relatedEntityId: prepared.invoice.invoiceId,
       }, idToken);
       setMessage(`WhatsApp sent from ${result.senderPhone}`);
       await loadInvoices();
@@ -102,7 +163,7 @@ export default function PosInvoicesPage() {
       {message ? <div className="rounded-2xl border border-white/10 bg-[#151515]/90 p-3 text-sm text-zinc-300">{message}</div> : null}
       <div className="overflow-x-auto rounded-3xl border border-white/10 bg-[#111111]/90">
         <table className="min-w-full text-left text-sm">
-          <thead className="border-b border-white/10 text-xs uppercase text-zinc-500"><tr><th className="px-4 py-3">Invoice</th><th className="px-4 py-3">Customer</th><th className="px-4 py-3">Total</th><th className="px-4 py-3">Paid</th><th className="px-4 py-3">Balance</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Action</th></tr></thead>
+          <thead className="border-b border-white/10 text-xs uppercase text-zinc-500"><tr><th className="px-4 py-3">Invoice</th><th className="px-4 py-3">Customer</th><th className="px-4 py-3">Total</th><th className="px-4 py-3">Paid</th><th className="px-4 py-3">Balance</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Warranty</th><th className="px-4 py-3">Action</th></tr></thead>
           <tbody>{invoices.map((invoice) => {
             const isVoid = invoice.paymentStatus === 'void';
             return (
@@ -113,6 +174,7 @@ export default function PosInvoicesPage() {
                 <td className="px-4 py-3 text-zinc-300">{formatCurrency(invoice.amountPaid)}</td>
                 <td className="px-4 py-3 text-zinc-300">{formatCurrency(invoice.balance)}</td>
                 <td className="px-4 py-3 text-zinc-300">{invoice.paymentStatus}</td>
+                <td className="px-4 py-3 text-zinc-300">{warrantySignatureStatus(invoice)}</td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-2">
                     {!isVoid ? <button disabled={actionLoading} className="text-orange-200 disabled:text-zinc-600" onClick={() => openWhatsApp(invoice)}>WhatsApp</button> : null}

@@ -388,6 +388,10 @@ service cloud.firestore {
       ];
     }
 
+    function isValidDeviceChecklistType(checklistType) {
+      return checklistType in ['pre_repair', 'after_repair'];
+    }
+
     function canAccessDeviceChecklist(data) {
       return signedIn()
         && data.jobId is string
@@ -471,6 +475,7 @@ service cloud.firestore {
     function hasValidDeviceChecklistCore(data) {
       return data.keys().hasOnly([
           'jobId',
+          'checklistType',
           'jobNumber',
           'customerId',
           'customerNameSnapshot',
@@ -510,6 +515,10 @@ service cloud.firestore {
           'customerAcknowledgedDisclaimer',
           'customerSignature',
           'publicSignatureTokenUsed',
+          'technicianId',
+          'completedAt',
+          'testedItems',
+          'remarks',
           'customerSignedIp',
           'customerSignedUserAgent',
           'overrideBy',
@@ -521,6 +530,7 @@ service cloud.firestore {
           'updatedAt'
         ])
         && data.jobId is string
+        && (!('checklistType' in data) || isValidDeviceChecklistType(data.checklistType))
         && data.jobNumber is string
         && data.customerId is string
         && data.customerNameSnapshot is string
@@ -560,6 +570,10 @@ service cloud.firestore {
         && (!('customerAcknowledgedDisclaimer' in data) || data.customerAcknowledgedDisclaimer is bool)
         && hasValidDeviceChecklistCustomerSignature(data)
         && (!('publicSignatureTokenUsed' in data) || data.publicSignatureTokenUsed is string)
+        && (!('technicianId' in data) || data.technicianId is string)
+        && (!('completedAt' in data) || data.completedAt is timestamp)
+        && (!('testedItems' in data) || data.testedItems is list)
+        && (!('remarks' in data) || data.remarks is string)
         && (!('customerSignedIp' in data) || data.customerSignedIp is string)
         && (!('customerSignedUserAgent' in data) || data.customerSignedUserAgent is string)
         && (!('overrideBy' in data) || data.overrideBy is string)
@@ -1636,6 +1650,16 @@ service cloud.firestore {
           data.warrantyClaimLimit == null
           || data.warrantyClaimLimit == 'unlimited_within_period'
         )
+        && (!('publicWarrantyToken' in data) || data.publicWarrantyToken is string)
+        && (!('publicWarrantyTokenCreatedAt' in data) || data.publicWarrantyTokenCreatedAt is timestamp)
+        && (!('publicWarrantyTokenStatus' in data) || data.publicWarrantyTokenStatus in ['active', 'revoked'])
+        && (!('warrantySignedAt' in data) || data.warrantySignedAt is timestamp)
+        && (!('warrantySignedName' in data) || data.warrantySignedName is string)
+        && (!('warrantySignedPhone' in data) || data.warrantySignedPhone is string)
+        && (!('warrantySignatureDataUrl' in data) || data.warrantySignatureDataUrl is string)
+        && (!('warrantyTypedSignature' in data) || data.warrantyTypedSignature is string)
+        && (!('acceptedTerms' in data) || data.acceptedTerms is bool)
+        && (!('warrantySignatureTokenUsed' in data) || data.warrantySignatureTokenUsed is string)
         && data.updatedAt is timestamp;
     }
 
@@ -1975,10 +1999,13 @@ service cloud.firestore {
           'job_sheet_consent_token_created',
           'job_sheet_manual_consent_recorded',
           'job_sheet_customer_signed',
+          'job_warranty_signature_token_created',
+          'job_warranty_terms_signed',
           'device_checklist_imported_customer',
           'device_checklist_imported_device',
           'device_checklist_sent_whatsapp',
           'device_checklist_signature_overridden',
+          'device_checklist_final_checked',
           'job_lifecycle_status_changed',
           'job_lifecycle_override_used',
           'job_cancelled',

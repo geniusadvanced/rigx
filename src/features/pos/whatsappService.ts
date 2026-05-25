@@ -171,6 +171,28 @@ export function buildInvoiceWhatsAppMessage(invoice: PosInvoice): string {
   ]);
 }
 
+export function buildInvoiceWithWarrantyWhatsAppMessage(input: {
+  invoiceLink: string;
+  warrantySignatureLink: string;
+}): string {
+  return `Hi, Genius Advanced here. Thank you for your purchase/service. Here is your invoice: ${input.invoiceLink}. Please review the details and keep this invoice for your warranty/reference. If everything is correct, kindly proceed with the warranty acknowledgement here: ${input.warrantySignatureLink}. Thank you.`;
+}
+
+export function buildInvoiceWithWarrantyWhatsAppLink(input: {
+  invoice: PosInvoice;
+  invoiceLink: string;
+  warrantySignatureLink: string;
+}): string {
+  return buildWaMeLink({
+    branch: input.invoice.branchId,
+    recipientPhone: input.invoice.customerPhone,
+    message: buildInvoiceWithWarrantyWhatsAppMessage({
+      invoiceLink: input.invoiceLink,
+      warrantySignatureLink: input.warrantySignatureLink,
+    }),
+  });
+}
+
 export function buildWarrantyWhatsAppMessage(warranty: WarrantyWhatsAppData): string {
   const warrantyPeriod = warranty.warrantyDurationDays ? `${warranty.warrantyDurationDays} days` : '';
   const endDate = warranty.endDate instanceof Date

@@ -11,10 +11,18 @@ export type DeviceChecklistStatus =
   | 'final_checked'
   | 'completed';
 
+export type DeviceChecklistType = 'pre_repair' | 'after_repair';
 export type InspectionStatus = 'good' | 'issue' | 'not_tested' | 'na';
 export type AccessoryBeforeStatus = 'received' | 'not_received' | 'na';
 export type AccessoryAfterStatus = 'returned' | 'not_returned' | 'na';
 export type InternalComponentStatus = 'present' | 'missing' | 'not_checked' | 'na';
+export type AfterRepairTestStatus = 'passed' | 'issue' | 'na';
+
+export interface AfterRepairTestedItem {
+  key: string;
+  label: string;
+  status: AfterRepairTestStatus;
+}
 
 export interface DeviceChecklistItem {
   key: string;
@@ -61,6 +69,7 @@ export interface DeviceChecklistTechnicianVerification {
 export interface DeviceChecklist {
   checklistId: string;
   jobId: string;
+  checklistType?: DeviceChecklistType;
   jobNumber: string;
   customerId: string;
   customerNameSnapshot: string;
@@ -107,6 +116,10 @@ export interface DeviceChecklist {
     tokenUsed?: string;
   };
   publicSignatureTokenUsed?: string;
+  technicianId?: string;
+  completedAt?: Timestamp;
+  testedItems?: AfterRepairTestedItem[];
+  remarks?: string;
   customerSignedIp?: string;
   customerSignedUserAgent?: string;
   overrideBy?: string;
@@ -143,6 +156,27 @@ export const internalComponentStatusOptions: Array<{ value: InternalComponentSta
   { value: 'not_checked', label: 'Not Checked' },
   { value: 'na', label: 'N/A' },
 ];
+
+export const afterRepairTestedItemDefinitions = [
+  ['device_powers_on', 'Device powers on'],
+  ['display_working', 'Display working'],
+  ['keyboard_touchpad_buttons_tested', 'Keyboard/touchpad/buttons tested'],
+  ['charging_tested', 'Charging tested'],
+  ['wifi_bluetooth_tested', 'WiFi/Bluetooth tested if applicable'],
+  ['speaker_mic_camera_tested', 'Speaker/mic/camera tested if applicable'],
+  ['storage_ram_detected', 'Storage/RAM detected if applicable'],
+  ['repair_issue_verified_fixed', 'Repair issue verified fixed'],
+  ['physical_condition_checked', 'Physical condition checked'],
+  ['customer_data_accessories_checked', 'Customer data/device accessories checked'],
+] as const;
+
+export function createDefaultAfterRepairTestedItems(): AfterRepairTestedItem[] {
+  return afterRepairTestedItemDefinitions.map(([key, label]) => ({
+    key,
+    label,
+    status: 'passed',
+  }));
+}
 
 export const deviceChecklistItemDefinitions = [
   ['lcd_screen', 'LCD / Screen', 'crack, scratch, line, flicker, no display, dim display'],
@@ -212,6 +246,10 @@ function normalizeInternalStatus(value: unknown): InternalComponentStatus {
   return ['present', 'missing', 'not_checked', 'na'].includes(String(value)) ? value as InternalComponentStatus : 'not_checked';
 }
 
+function normalizeAfterRepairTestStatus(value: unknown): AfterRepairTestStatus {
+  return ['passed', 'issue', 'na'].includes(String(value)) ? value as AfterRepairTestStatus : 'passed';
+}
+
 export function normalizeChecklistItems(value: unknown): DeviceChecklistItem[] {
   const rows = Array.isArray(value) ? value.filter(isRecord) : [];
   return createDefaultChecklistItems().map((defaultItem) => {
@@ -263,4 +301,16 @@ export function normalizeInternalComponents(value: unknown, legacyInternal = '')
     storage: normalizeComponent('storage'),
     wifiCard: normalizeComponent('wifiCard'),
   };
+}
+
+export function normalizeAfterRepairTestedItems(value: unknown): AfterRepairTestedItem[] {
+  const rows = Array.isArray(value) ? value.filter(isRecord) : [];
+  return createDefaultAfterRepairTestedItems().map((defaultItem) => {
+    const row = rows.find((item) => item.key === defaultItem.key);
+    if (!row) return defaultItem;
+    return {
+      ...defaultItem,
+      status: normalizeAfterRepairTestStatus(row.status),
+    };
+  });
 }

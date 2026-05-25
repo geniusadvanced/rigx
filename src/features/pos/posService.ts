@@ -1727,6 +1727,7 @@ export async function voidInvoice(invoice: PosInvoice, reason: string, user: Use
 
 export async function activateWarrantiesFromInvoice(invoice: PosInvoice, user: UserData): Promise<number> {
   assertCan(user.role, 'pos.operate');
+  if (invoice.jobId) return 0;
   if (invoice.paymentStatus !== 'paid') return 0;
   const linkedJob = await getLinkedJobForPos(invoice.jobId);
   if (linkedJob && !['delivered', 'warranty_active'].includes(getCurrentRepairLifecycleStatus(linkedJob))) return 0;
@@ -1936,6 +1937,64 @@ export async function ensureWarrantySignatureToken(warranty: PosWarranty, user: 
     note: 'Warranty terms public signature token created',
   });
   return publicWarrantyToken;
+}
+
+function invoiceWarrantyItemKey(index: number, item: PosLineItem): string {
+  return `${index}_${item.priceItemId || item.name.replace(/\s+/g, '_')}`;
+}
+
+async function createWarrantyForInvoiceItem(
+  invoice: PosInvoice,
+  user: UserData,
+  item: PosLineItem,
+  index: number,
+  warrantyDurationDays: number,
+): Promise<PosWarranty> {
+  const startDate = new Date();
+  const warrantyRef = doc(collection(db, 'warranties'));
+  await setDoc(warrantyRef, {
+    invoiceId: invoice.invoiceId,
+    invoiceItemKey: invoiceWarrantyItemKey(index, item),
+    jobId: cleanText(invoice.jobId),
+    customerId: invoice.customerId,
+    customerName: invoice.customerName,
+    customerPhone: invoice.customerPhone,
+    deviceId: cleanText(invoice.deviceId),
+    deviceLabel: cleanText(invoice.deviceLabel),
+    deviceName: cleanText(invoice.deviceName),
+    deviceBrand: cleanText(invoice.deviceBrand),
+    deviceModel: cleanText(invoice.deviceModel),
+    serialNumber: cleanText(invoice.serialNumber),
+    imei: cleanText(invoice.imei),
+    branchId: invoice.branchId,
+    itemName: item.name,
+    warrantyDurationDays,
+    startDate: Timestamp.fromDate(startDate),
+    endDate: Timestamp.fromDate(addDays(startDate, warrantyDurationDays)),
+    claimLimit: 'unlimited',
+    status: 'active',
+    createdAt: serverTimestamp(),
+    createdBy: user.uid,
+  });
+  const snapshot = await getDoc(warrantyRef);
+  return mapWarranty(warrantyRef.id, snapshot.data() || {});
+}
+
+export async function ensureInvoiceWarrantySignatureTarget(invoice: PosInvoice, user: UserData): Promise<PosWarranty> {
+  assertCan(user.role, 'pos.operate');
+  if (invoice.jobId) throw new Error('Linked repair job invoices use Job Warranty, not POS Warranty Agreement.');
+  const existingSnapshot = await getDocs(query(collection(db, 'warranties'), where('invoiceId', '==', invoice.invoiceId)));
+  const existingWarranties = existingSnapshot.docs.map((warrantyDoc) => mapWarranty(warrantyDoc.id, warrantyDoc.data()));
+  const unsignedExisting = existingWarranties.find((warranty) => !warranty.warrantyTermsAccepted && !warranty.warrantySignedAt && warranty.status !== 'void');
+  if (unsignedExisting) return unsignedExisting;
+  const activeExisting = existingWarranties.find((warranty) => warranty.status !== 'void');
+  if (activeExisting) return activeExisting;
+
+  const warrantyItemIndex = invoice.items.findIndex((item) => Number(item.warrantyDurationDays || 0) > 0);
+  const item = warrantyItemIndex >= 0 ? invoice.items[warrantyItemIndex] : invoice.items[0];
+  if (!item) throw new Error('Invoice has no item to attach warranty terms.');
+  const warrantyDurationDays = Math.max(1, Number(item.warrantyDurationDays || 0) || 1);
+  return createWarrantyForInvoiceItem(invoice, user, item, Math.max(0, warrantyItemIndex), warrantyDurationDays);
 }
 
 export async function logWarrantyTermsWhatsAppSent(warranty: PosWarranty, user: UserData): Promise<void> {

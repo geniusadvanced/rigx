@@ -20,6 +20,16 @@ export interface JobDocumentRecord {
   warrantyEndDate: Timestamp | null;
   warrantyPolicyText?: string;
   warrantyClaimLimit?: WarrantyClaimLimit | null;
+  publicWarrantyToken?: string;
+  publicWarrantyTokenCreatedAt?: Timestamp;
+  publicWarrantyTokenStatus?: 'active' | 'revoked';
+  warrantySignedAt?: Timestamp;
+  warrantySignedName?: string;
+  warrantySignedPhone?: string;
+  warrantySignatureDataUrl?: string;
+  warrantyTypedSignature?: string;
+  acceptedTerms?: boolean;
+  warrantySignatureTokenUsed?: string;
   createdBy: string;
   createdByDisplayName: string;
   createdAt: Timestamp;

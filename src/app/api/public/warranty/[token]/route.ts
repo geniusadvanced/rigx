@@ -17,6 +17,17 @@ async function getWarrantyByToken(token: string) {
   return { warrantyId: doc.id, data: doc.data() };
 }
 
+async function getJobWarrantyByToken(token: string) {
+  const snapshot = await adminDb.collection('jobDocuments')
+    .where('publicWarrantyToken', '==', token)
+    .limit(1)
+    .get();
+  if (snapshot.empty) return null;
+  const doc = snapshot.docs[0];
+  if (doc.data().type !== 'warranty') return null;
+  return { warrantyId: doc.id, data: doc.data() };
+}
+
 async function getLinkedJob(jobId?: string) {
   if (!jobId) return null;
   const snapshot = await adminDb.collection('jobs').doc(jobId).get();
@@ -32,6 +43,7 @@ async function getLinkedInvoice(invoiceId?: string) {
 function displayJobNumber(data: FirebaseFirestore.DocumentData, job: FirebaseFirestore.DocumentData | null): string {
   return [
     data.jobNumber,
+    data.jobSheetNo,
     job?.jobNo,
     job?.jobNumber,
     job?.jobSheetNo,
@@ -58,6 +70,16 @@ function termsSnapshot(data: FirebaseFirestore.DocumentData): WarrantyTermsSnaps
   return snapshot?.version ? snapshot : defaultWarrantyTermsSnapshot;
 }
 
+function jobWarrantyTermsSnapshot(data: FirebaseFirestore.DocumentData): WarrantyTermsSnapshot {
+  const lines = String(data.warrantyPolicyText || '').split('\n').map((line) => line.trim()).filter(Boolean);
+  if (lines.length === 0) return defaultWarrantyTermsSnapshot;
+  return {
+    ...defaultWarrantyTermsSnapshot,
+    coverage: lines,
+    acknowledgement: 'I acknowledge and accept the warranty terms and conditions for this repair/service.',
+  };
+}
+
 function isExpired(data: FirebaseFirestore.DocumentData): boolean {
   const expiresAt = data.publicWarrantyTokenExpiresAt?.toDate?.();
   return Boolean(expiresAt && expiresAt.getTime() < Date.now());
@@ -69,7 +91,7 @@ function safeWarranty(
   job: FirebaseFirestore.DocumentData | null,
   invoice: FirebaseFirestore.DocumentData | null,
 ) {
-  const signed = Boolean(data.warrantySignedAt || data.warrantyTermsAccepted);
+  const signed = Boolean(data.warrantySignedAt || data.warrantyTermsAccepted || data.acceptedTerms);
   return {
     warrantyId,
     warrantyNumber: `WTY-${warrantyId.slice(0, 8).toUpperCase()}`,
@@ -98,6 +120,47 @@ function safeWarranty(
   };
 }
 
+function safeJobWarranty(
+  warrantyId: string,
+  data: FirebaseFirestore.DocumentData,
+  job: FirebaseFirestore.DocumentData | null,
+) {
+  const signed = Boolean(data.warrantySignedAt || data.acceptedTerms);
+  const terms = jobWarrantyTermsSnapshot(data);
+  const branchId = String(job?.branchId || data.branchId || 'cyberjaya');
+  const deviceName = [
+    [job?.deviceBrand, job?.deviceModel].map((value) => String(value || '').trim()).filter(Boolean).join(' '),
+    String(job?.device || '').trim(),
+    String(data.description || '').trim(),
+  ].find(Boolean) || 'Device';
+  return {
+    warrantyId,
+    warrantyNumber: `JW-${warrantyId.slice(0, 8).toUpperCase()}`,
+    jobNumber: displayJobNumber(data, job),
+    invoiceNo: '',
+    customerName: job?.customerName || data.customerName || '',
+    customerPhone: job?.customerPhone || data.customerPhone || '',
+    branchId,
+    deviceName,
+    coveredItem: data.title || 'Repair Warranty',
+    warrantyDurationDays: Number(data.warrantyPeriodDays || 0),
+    startDate: serializeTimestamp(data.warrantyStartDate),
+    endDate: serializeTimestamp(data.warrantyEndDate),
+    claimLimit: 'Unlimited within active warranty period',
+    status: data.warrantyEndDate?.toMillis?.() >= Date.now() ? 'active' : 'expired',
+    terms,
+    signed,
+    canSign: !signed && data.publicWarrantyTokenStatus !== 'revoked',
+    warrantySignedAt: serializeTimestamp(data.warrantySignedAt),
+    warrantySignedName: data.warrantySignedName || '',
+    warrantySignedPhone: data.warrantySignedPhone || '',
+    warrantySignatureDataUrl: signed ? data.warrantySignatureDataUrl || '' : '',
+    warrantyTypedSignature: signed ? data.warrantyTypedSignature || '' : '',
+    warrantySignatureTokenUsed: signed ? data.warrantySignatureTokenUsed || '' : '',
+    warrantyTermsVersion: terms.version,
+  };
+}
+
 async function writePublicAudit(warrantyId: string, data: FirebaseFirestore.DocumentData) {
   await adminDb.collection('auditLogs').add({
     entityType: 'pos',
@@ -115,7 +178,15 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ to
   try {
     const { token } = await context.params;
     const warranty = await getWarrantyByToken(token);
-    if (!warranty) return NextResponse.json({ error: 'Warranty link is invalid or expired.' }, { status: 404 });
+    if (!warranty) {
+      const jobWarranty = await getJobWarrantyByToken(token);
+      if (!jobWarranty) return NextResponse.json({ error: 'Warranty link is invalid or expired.' }, { status: 404 });
+      if (jobWarranty.data.publicWarrantyTokenStatus === 'revoked') {
+        return NextResponse.json({ error: 'Warranty link is invalid or expired.' }, { status: 410 });
+      }
+      const job = await getLinkedJob(String(jobWarranty.data.jobId || '')).catch(() => null);
+      return NextResponse.json({ warranty: safeJobWarranty(jobWarranty.warrantyId, jobWarranty.data, job) });
+    }
     if (warranty.data.publicWarrantyTokenStatus === 'revoked' || isExpired(warranty.data)) {
       return NextResponse.json({ error: 'Warranty link is invalid or expired.' }, { status: 410 });
     }
@@ -140,11 +211,61 @@ export async function POST(request: NextRequest, context: { params: Promise<{ to
       acknowledged?: boolean;
     };
     const warranty = await getWarrantyByToken(token);
-    if (!warranty) return NextResponse.json({ error: 'Warranty link is invalid or expired.' }, { status: 404 });
+    if (!warranty) {
+      const jobWarranty = await getJobWarrantyByToken(token);
+      if (!jobWarranty) return NextResponse.json({ error: 'Warranty link is invalid or expired.' }, { status: 404 });
+      if (jobWarranty.data.publicWarrantyTokenStatus === 'revoked') {
+        return NextResponse.json({ error: 'Warranty link is invalid or expired.' }, { status: 410 });
+      }
+      if (jobWarranty.data.warrantySignedAt || jobWarranty.data.acceptedTerms) {
+        return NextResponse.json({ error: 'This warranty agreement has already been signed.' }, { status: 409 });
+      }
+
+      const signerName = String(body.signerName || '').trim();
+      const signerPhone = String(body.signerPhone || '').trim();
+      const signatureDataUrl = String(body.signatureDataUrl || '').trim();
+      const typedSignature = String(body.typedSignature || '').trim();
+      if (!signerName) return NextResponse.json({ error: 'Signer name is required.' }, { status: 400 });
+      if (!signerPhone) return NextResponse.json({ error: 'Signer phone is required.' }, { status: 400 });
+      if (body.acknowledged !== true) return NextResponse.json({ error: 'Please confirm the warranty acknowledgement.' }, { status: 400 });
+      if (!typedSignature && !signatureDataUrl.startsWith('data:image/png;base64,')) {
+        return NextResponse.json({ error: 'Digital signature or typed signature is required.' }, { status: 400 });
+      }
+      if (signatureDataUrl && signatureDataUrl.length > 500000) {
+        return NextResponse.json({ error: 'Signature image is too large. Please clear and sign again.' }, { status: 400 });
+      }
+
+      await adminDb.collection('jobDocuments').doc(jobWarranty.warrantyId).update({
+        acceptedTerms: true,
+        warrantySignedAt: FieldValue.serverTimestamp(),
+        warrantySignedName: signerName,
+        warrantySignedPhone: signerPhone,
+        warrantySignatureDataUrl: signatureDataUrl,
+        warrantyTypedSignature: typedSignature,
+        warrantySignatureTokenUsed: token,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      await adminDb.collection('auditLogs').add({
+        entityType: 'job',
+        entityId: jobWarranty.data.jobId || jobWarranty.warrantyId,
+        action: 'job_warranty_terms_signed',
+        changedBy: 'public_link',
+        changedByDisplayName: signerName || 'Customer',
+        changes: [],
+        note: 'Job warranty terms signed from public link',
+        createdAt: FieldValue.serverTimestamp(),
+      }).catch(() => undefined);
+      const latest = await adminDb.collection('jobDocuments').doc(jobWarranty.warrantyId).get();
+      const job = await getLinkedJob(String(jobWarranty.data.jobId || '')).catch(() => null);
+      return NextResponse.json({
+        warranty: safeJobWarranty(jobWarranty.warrantyId, latest.data() || jobWarranty.data, job),
+        message: 'Warranty agreement signed. Genius Advanced has received your acknowledgement.',
+      });
+    }
     if (warranty.data.publicWarrantyTokenStatus === 'revoked' || isExpired(warranty.data)) {
       return NextResponse.json({ error: 'Warranty link is invalid or expired.' }, { status: 410 });
     }
-    if (warranty.data.warrantySignedAt || warranty.data.warrantyTermsAccepted) {
+    if (warranty.data.warrantySignedAt || warranty.data.warrantyTermsAccepted || warranty.data.acceptedTerms) {
       return NextResponse.json({ error: 'This warranty agreement has already been signed.' }, { status: 409 });
     }
 
@@ -164,6 +285,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ to
 
     await adminDb.collection('warranties').doc(warranty.warrantyId).update({
       warrantyTermsAccepted: true,
+      acceptedTerms: true,
       warrantySignedAt: FieldValue.serverTimestamp(),
       warrantySignedName: signerName,
       warrantySignedPhone: signerPhone,

@@ -47,6 +47,12 @@ function normalizeText(value: string): string {
   return value.trim();
 }
 
+function generatePublicToken(): string {
+  const bytes = new Uint8Array(24);
+  globalThis.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 function mapDocument(documentId: string, data: Record<string, unknown>): JobDocumentRecord {
   return {
     ...(data as Omit<JobDocumentRecord, 'documentId'>),
@@ -245,6 +251,32 @@ export async function updateJobDocumentRecord(
     ],
     note: documentRecord.type === 'warranty' ? 'Warranty period updated' : documentRecord.type === 'service_report' ? 'Service report updated' : 'Job document updated',
   });
+}
+
+export async function ensureJobWarrantySignatureToken(
+  documentRecord: JobDocumentRecord,
+  user: UserData,
+): Promise<string> {
+  if (documentRecord.type !== 'warranty') throw new Error('Only warranty records can be sent for signature');
+  const existingToken = documentRecord.publicWarrantyToken || '';
+  if (existingToken && documentRecord.publicWarrantyTokenStatus !== 'revoked') return existingToken;
+  const publicWarrantyToken = generatePublicToken();
+  await updateDoc(doc(db, 'jobDocuments', documentRecord.documentId), {
+    publicWarrantyToken,
+    publicWarrantyTokenCreatedAt: serverTimestamp(),
+    publicWarrantyTokenStatus: 'active',
+    updatedAt: serverTimestamp(),
+  });
+  await writeAuditLog({
+    entityType: 'job',
+    entityId: documentRecord.jobId,
+    action: 'job_warranty_signature_token_created',
+    changedBy: user.uid,
+    changedByDisplayName: displayNameForUser(user),
+    changes: [{ field: 'publicWarrantyToken', before: existingToken ? 'revoked' : null, after: 'created' }],
+    note: 'Job warranty public signature token created',
+  }).catch(() => undefined);
+  return publicWarrantyToken;
 }
 
 export async function deleteJobDocumentRecord(documentRecord: JobDocumentRecord): Promise<void> {

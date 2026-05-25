@@ -229,6 +229,7 @@ export interface PosWarranty {
   publicWarrantyTokenStatus?: PublicTokenStatus;
   warrantyTermsVersion?: string;
   warrantyTermsAccepted?: boolean;
+  acceptedTerms?: boolean;
   warrantySignedAt?: Timestamp;
   warrantySignedName?: string;
   warrantySignedPhone?: string;

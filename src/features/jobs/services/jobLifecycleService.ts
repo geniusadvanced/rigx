@@ -1,5 +1,6 @@
 import { arrayUnion, doc, serverTimestamp, Timestamp, updateDoc } from 'firebase/firestore';
 import { writeAuditLog } from '@/features/audit/services/auditLogService';
+import { getAfterRepairChecklistByJob } from '@/features/device-checklists/deviceChecklistService';
 import { db } from '@/lib/firebase/init';
 import { can, isAdminOrManager } from '@/lib/rbac/can';
 import type { Job, UserData } from '@/types';
@@ -258,6 +259,21 @@ export async function updateJobLifecycleStatus(params: {
   }
   if (params.nextStatus === 'warranty_active' && !['delivered', 'repair_completed'].includes(currentStatus) && !overrideUsed) {
     throw new Error('Cannot activate warranty before delivery or completion');
+  }
+  if (params.nextStatus === 'ready_for_pickup') {
+    const afterRepairChecklist = await getAfterRepairChecklistByJob({
+      jobId: params.job.docId,
+      user: params.user,
+      jobBranchId: params.job.branchId,
+      jobTechnicianId: params.job.technicianId,
+    });
+    if (
+      afterRepairChecklist?.checklistType !== 'after_repair'
+      || afterRepairChecklist.checklistStatus !== 'completed'
+      || !afterRepairChecklist.completedAt
+    ) {
+      throw new Error('Please complete After Repair Checklist before marking this device as Ready for Pickup.');
+    }
   }
 
   const timestampField = timestampFieldByLifecycle[params.nextStatus];

@@ -4,13 +4,15 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { downloadReceiptPdf } from '@/features/pos/generatePosPdf';
 import {
-  buildInvoiceWhatsAppLink,
   buildQuotationWhatsAppLink,
   createInvoice,
   createInvoiceFromQuotation,
   createQuotation,
+  buildInvoiceWhatsAppLink,
   ensureInvoicePaymentToken,
+  ensureInvoiceWarrantySignatureTarget,
   ensureQuotationPublicToken,
+  ensureWarrantySignatureToken,
   getInvoices,
   getPaymentSubmissions,
   getPayments,
@@ -20,7 +22,7 @@ import {
   recordInvoicePayment,
   type PosDocumentInput,
 } from '@/features/pos/posService';
-import { buildReceiptWhatsAppLink } from '@/features/pos/whatsappService';
+import { buildInvoiceWithWarrantyWhatsAppLink, buildReceiptWhatsAppLink, buildWarrantyWhatsAppLink } from '@/features/pos/whatsappService';
 import { getCustomers, getDevices } from '@/features/customers/services/customerService';
 import type { Customer, Device } from '@/features/customers/types';
 import type {
@@ -31,6 +33,7 @@ import type {
   PosPayment,
   PosPaymentMethod,
   PosQuotation,
+  PosWarranty,
   PriceItem,
   PriceItemType,
 } from '@/features/pos/types';
@@ -137,6 +140,10 @@ function warrantyDurationLabel(days?: number): string {
   return warrantyDurationOptions.find((option) => option.value === value)?.label || `${value} days`;
 }
 
+function appOrigin(): string {
+  return process.env.NEXT_PUBLIC_APP_URL || window.location.origin;
+}
+
 function cleanDeviceText(value: unknown): string {
   return String(value || '').trim();
 }
@@ -196,6 +203,9 @@ export default function PosPage() {
   const [validUntil, setValidUntil] = useState(defaultValidUntil());
   const [quotation, setQuotation] = useState<PosQuotation | null>(null);
   const [invoice, setInvoice] = useState<PosInvoice | null>(null);
+  const [invoiceWarranty, setInvoiceWarranty] = useState<PosWarranty | null>(null);
+  const [invoicePublicLink, setInvoicePublicLink] = useState('');
+  const [warrantySignatureLink, setWarrantySignatureLink] = useState('');
   const [payment, setPayment] = useState({ amount: '', method: 'cash' as PosPaymentMethod, referenceNo: '', proofFile: null as File | null });
   const [dashboardInvoices, setDashboardInvoices] = useState<PosInvoice[]>([]);
   const [dashboardPayments, setDashboardPayments] = useState<PosPayment[]>([]);
@@ -468,12 +478,112 @@ export default function PosPage() {
         : await createInvoice(buildDocumentInput(), profile);
       setInvoice(nextInvoice);
       setSelectedPaymentInvoice(nextInvoice);
-      setMessage('Invoice created');
+      setInvoiceWarranty(null);
+      setInvoicePublicLink('');
+      setWarrantySignatureLink('');
+      setMessage('Invoice created. Send invoice and warranty acknowledgement to customer.');
       await reloadPaymentData(nextInvoice);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unable to create invoice';
       setCreateSaleError(errorMessage);
       setMessage(errorMessage);
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function prepareInvoiceCustomerLinks(targetInvoice = invoice): Promise<{
+    invoice: PosInvoice;
+    warranty: PosWarranty;
+    invoiceLink: string;
+    warrantyLink: string;
+  }> {
+    if (!profile || !targetInvoice) throw new Error('Invoice is required');
+    const [invoiceToken, warrantyTarget] = await Promise.all([
+      ensureInvoicePaymentToken(targetInvoice.invoiceId, profile),
+      ensureInvoiceWarrantySignatureTarget(targetInvoice, profile),
+    ]);
+    const warrantyToken = await ensureWarrantySignatureToken(warrantyTarget, profile);
+    const nextInvoice = { ...targetInvoice, publicPaymentToken: invoiceToken };
+    const nextWarranty = { ...warrantyTarget, publicWarrantyToken: warrantyToken };
+    const invoiceLink = `${appOrigin()}/invoice/${invoiceToken}`;
+    const warrantyLink = `${appOrigin()}/warranty/${warrantyToken}`;
+    setInvoice(nextInvoice);
+    setInvoiceWarranty(nextWarranty);
+    setInvoicePublicLink(invoiceLink);
+    setWarrantySignatureLink(warrantyLink);
+    return { invoice: nextInvoice, warranty: nextWarranty, invoiceLink, warrantyLink };
+  }
+
+  async function openInvoiceWithWarrantyWhatsApp() {
+    if (!invoice) return;
+    if (!invoice.customerPhone) {
+      setMessage('Customer phone number is missing. Please update customer details first.');
+      return;
+    }
+    setActionLoading(true);
+    setMessage('');
+    try {
+      if (invoice.jobId) {
+        const token = await ensureInvoicePaymentToken(invoice.invoiceId, profile!);
+        const nextInvoice = { ...invoice, publicPaymentToken: token };
+        setInvoice(nextInvoice);
+        window.open(buildInvoiceWhatsAppLink(nextInvoice), '_blank', 'noopener,noreferrer');
+        setMessage('Invoice WhatsApp opened. Use Job Warranty section for repair warranty signature.');
+        await reloadPaymentData(nextInvoice);
+        return;
+      }
+      const prepared = await prepareInvoiceCustomerLinks(invoice);
+      window.open(buildInvoiceWithWarrantyWhatsAppLink({
+        invoice: prepared.invoice,
+        invoiceLink: prepared.invoiceLink,
+        warrantySignatureLink: prepared.warrantyLink,
+      }), '_blank', 'noopener,noreferrer');
+      setMessage('Invoice WhatsApp opened with warranty acknowledgement link.');
+      await reloadPaymentData(prepared.invoice);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to prepare invoice WhatsApp link');
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function openWarrantyTermsWhatsApp() {
+    if (!invoice) return;
+    if (invoice.jobId) {
+      setMessage('Linked repair job invoices use Job Warranty. Send warranty signature from the Job Warranty section.');
+      return;
+    }
+    if (!invoice.customerPhone) {
+      setMessage('Customer phone number is missing. Please update customer details first.');
+      return;
+    }
+    setActionLoading(true);
+    setMessage('');
+    try {
+      const prepared = await prepareInvoiceCustomerLinks(invoice);
+      window.open(buildWarrantyWhatsAppLink(prepared.warranty), '_blank', 'noopener,noreferrer');
+      setMessage('Warranty/terms signature WhatsApp opened.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to prepare warranty signature link');
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function copyInvoiceLink() {
+    if (!invoice) return;
+    setActionLoading(true);
+    setMessage('');
+    try {
+      const token = await ensureInvoicePaymentToken(invoice.invoiceId, profile!);
+      const link = `${appOrigin()}/invoice/${token}`;
+      setInvoice({ ...invoice, publicPaymentToken: token });
+      setInvoicePublicLink(link);
+      await navigator.clipboard.writeText(link);
+      setMessage('Invoice link copied.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to copy invoice link');
     } finally {
       setActionLoading(false);
     }
@@ -562,21 +672,6 @@ export default function PosPage() {
       window.open(buildQuotationWhatsAppLink(nextQuotation), '_blank', 'noopener,noreferrer');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to prepare WhatsApp quotation link');
-    } finally {
-      setActionLoading(false);
-    }
-  }
-
-  async function openInvoiceWhatsApp() {
-    if (!profile || !invoice) return;
-    setActionLoading(true);
-    try {
-      const token = await ensureInvoicePaymentToken(invoice.invoiceId, profile);
-      const nextInvoice = { ...invoice, publicPaymentToken: token };
-      setInvoice(nextInvoice);
-      window.open(buildInvoiceWhatsAppLink(nextInvoice), '_blank', 'noopener,noreferrer');
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Unable to prepare WhatsApp invoice link');
     } finally {
       setActionLoading(false);
     }
@@ -930,7 +1025,19 @@ export default function PosPage() {
             {invoice ? (
               <div className="mt-4 rounded-2xl border border-white/10 bg-[#151515] p-3">
                 <div className="text-sm font-semibold text-white">{invoice.invoiceNo}</div>
-                {invoice.paymentStatus !== 'void' ? <button type="button" onClick={openInvoiceWhatsApp} disabled={actionLoading} className="mt-2 inline-block text-sm text-orange-200 disabled:text-zinc-600">WhatsApp Invoice</button> : null}
+                <div className="mt-1 text-xs text-zinc-500">Next actions</div>
+                {invoice.paymentStatus !== 'void' ? (
+                  <div className="mt-3 grid gap-2">
+                    <Link href={`/dashboard/pos/invoices/${invoice.invoiceId}`} className="rounded-xl border border-white/10 px-3 py-2 text-center text-sm text-zinc-200">View Invoice</Link>
+                    <button type="button" onClick={openInvoiceWithWarrantyWhatsApp} disabled={actionLoading} className="rounded-xl border border-orange-500/30 px-3 py-2 text-sm text-orange-200 disabled:text-zinc-600">Send Invoice via WhatsApp</button>
+                    {!invoice.jobId ? <button type="button" onClick={openWarrantyTermsWhatsApp} disabled={actionLoading} className="rounded-xl border border-emerald-500/30 px-3 py-2 text-sm text-emerald-200 disabled:text-zinc-600">Send Warranty/Terms for Signature</button> : null}
+                    <button type="button" onClick={copyInvoiceLink} disabled={actionLoading} className="rounded-xl border border-white/10 px-3 py-2 text-sm text-zinc-200 disabled:text-zinc-600">Copy Invoice Link</button>
+                    <div className="rounded-xl border border-white/10 bg-[#101010] p-3 text-xs text-zinc-400">
+                      <div>Invoice link: <span className="break-all text-zinc-200">{invoicePublicLink || (invoice.publicPaymentToken ? `${appOrigin()}/invoice/${invoice.publicPaymentToken}` : 'Not generated')}</span></div>
+                      <div className="mt-1">Warranty signature: <span className="break-all text-zinc-200">{invoice.jobId ? 'Use Job Warranty section for repair jobs' : warrantySignatureLink || (invoiceWarranty?.publicWarrantyToken ? `${appOrigin()}/warranty/${invoiceWarranty.publicWarrantyToken}` : 'Not generated')}</span></div>
+                    </div>
+                  </div>
+                ) : null}
                 <form onSubmit={handleRecordPayment} className="mt-3 grid gap-2">
                   <input required type="number" min="0.01" step="0.01" value={payment.amount} onChange={(event) => setPayment((current) => ({ ...current, amount: event.target.value }))} placeholder="Payment amount" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white" />
                   <select value={payment.method} onChange={(event) => setPayment((current) => ({ ...current, method: event.target.value as PosPaymentMethod }))} className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white">
