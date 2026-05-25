@@ -71,7 +71,6 @@ const managerNavSections: SidebarSection[] = [
       { href: '/dashboard/inventory', label: 'Inventory', icon: Wrench },
       { href: '/dashboard/pos/inventory-movements', label: 'POS Inventory Movements', icon: Wrench },
       { href: '/dashboard/genius-partners', label: 'Genius Partners', icon: Handshake },
-      { href: '/dashboard/warranties', label: 'Warranties', icon: ShieldCheck },
       { href: '/dashboard/warranty-claims', label: 'Warranty Claims', icon: ShieldCheck },
     ],
   },

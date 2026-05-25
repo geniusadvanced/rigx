@@ -18,6 +18,7 @@ import {
   getPayments,
   getPaymentsByInvoice,
   getPriceItems,
+  getQuotations,
   priceItemMatchesSearch,
   recordInvoicePayment,
   type PosDocumentInput,
@@ -112,6 +113,32 @@ function itemSummary(invoice: PosInvoice): string {
   const extraCount = Math.max(0, (invoice.items?.length || 0) - 1);
   if (firstItem && extraCount > 0) return `${firstItem} + ${extraCount} more`;
   return firstItem || invoice.deviceId || invoice.jobId || 'Service invoice';
+}
+
+function compactSearchText(value: unknown): string {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function searchableTokens(values: unknown[]): string[] {
+  return values
+    .flatMap((value) => String(value || '').toLowerCase().split(/\s+/))
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function normalizedSearchMatches(search: string, values: unknown[]): boolean {
+  const rawTerm = search.trim().toLowerCase();
+  if (!rawTerm) return true;
+  const compactTerm = compactSearchText(rawTerm);
+  const haystack = values.map((value) => String(value || '').toLowerCase()).join(' ');
+  const compactHaystack = compactSearchText(haystack);
+  if (haystack.includes(rawTerm) || (compactTerm && compactHaystack.includes(compactTerm))) return true;
+
+  return searchableTokens(values).some((token) => {
+    const compactToken = compactSearchText(token);
+    if (!compactToken || !compactTerm) return false;
+    return compactToken.includes(compactTerm) || compactTerm.includes(compactToken);
+  });
 }
 
 function paymentStatusClass(status: PosInvoice['paymentStatus']): string {
@@ -209,6 +236,7 @@ export default function PosPage() {
   const [payment, setPayment] = useState({ amount: '', method: 'cash' as PosPaymentMethod, referenceNo: '', proofFile: null as File | null });
   const [dashboardInvoices, setDashboardInvoices] = useState<PosInvoice[]>([]);
   const [dashboardPayments, setDashboardPayments] = useState<PosPayment[]>([]);
+  const [dashboardQuotations, setDashboardQuotations] = useState<PosQuotation[]>([]);
   const [dashboardSubmissions, setDashboardSubmissions] = useState<PaymentSubmission[]>([]);
   const [paymentSearch, setPaymentSearch] = useState('');
   const [priceItemSearch, setPriceItemSearch] = useState('');
@@ -235,14 +263,15 @@ export default function PosPage() {
   useEffect(() => {
     let cancelled = false;
     if (!profile?.role || !can(profile.role, 'pos.operate')) return;
-    Promise.all([getPriceItems(profile), getCustomers(profile), getDevices(profile.role), getInvoices(profile), getPayments(profile)])
-      .then(([items, customerRows, deviceRows, invoiceRows, paymentRows]) => {
+    Promise.all([getPriceItems(profile), getCustomers(profile), getDevices(profile.role), getInvoices(profile), getPayments(profile), getQuotations(profile)])
+      .then(([items, customerRows, deviceRows, invoiceRows, paymentRows, quotationRows]) => {
         if (cancelled) return;
         setPriceItems(items.filter((item) => item.active));
         setCustomers(customerRows);
         setDevices(deviceRows);
         setDashboardInvoices(invoiceRows);
         setDashboardPayments(paymentRows);
+        setDashboardQuotations(quotationRows);
       })
       .catch((error) => {
         if (!cancelled) setMessage(error instanceof Error ? error.message : 'Unable to load POS data');
@@ -286,26 +315,53 @@ export default function PosPage() {
     .slice(0, 6), [dashboardPayments]);
 
   const outstandingInvoices = useMemo(() => {
-    const term = paymentSearch.trim().toLowerCase();
+    const customersById = new Map(customers.map((customer) => [customer.customerId, customer]));
+    const jobsById = new Map(jobs.map((job) => [job.docId, job]));
+    const quotationsById = new Map(dashboardQuotations.map((row) => [row.quotationId, row]));
     return dashboardInvoices
       .filter((row) => !['void', 'refunded', 'paid'].includes(row.paymentStatus) && Number(row.balance || 0) > 0)
       .filter((row) => {
-        if (!term) return true;
-        const haystack = [
+        const customer = customersById.get(row.customerId);
+        const job = row.jobId ? jobsById.get(row.jobId) : undefined;
+        const quotation = row.quotationId ? quotationsById.get(row.quotationId) : undefined;
+        return normalizedSearchMatches(paymentSearch, [
           row.customerName,
           row.customerPhone,
+          customer?.email,
+          customer?.fullName,
+          customer?.phone,
+          customer?.customerNumber,
           row.invoiceNo,
+          row.officialInvoiceNo,
           row.invoiceId,
           row.quotationId,
+          quotation?.quotationNo,
+          quotation?.quotationNumber,
+          quotation?.customerName,
+          quotation?.customerPhone,
+          quotation?.customerNumber,
+          quotation?.jobNumber,
           row.jobId,
+          job?.jobNo,
+          job?.jobNumber,
+          job?.jobSheetNo,
+          job?.agnJobNumber,
+          job?.customerName,
+          job?.customerPhone,
+          (job as typeof job & { customerEmail?: string })?.customerEmail,
           row.deviceId,
+          row.deviceLabel,
+          row.deviceName,
+          row.deviceBrand,
+          row.deviceModel,
+          row.serialNumber,
+          row.imei,
           itemSummary(row),
-        ].join(' ').toLowerCase();
-        return haystack.includes(term);
+        ]);
       })
       .sort((left, right) => Number(right.balance || 0) - Number(left.balance || 0))
       .slice(0, 12);
-  }, [dashboardInvoices, paymentSearch]);
+  }, [customers, dashboardInvoices, dashboardQuotations, jobs, paymentSearch]);
 
   const topCustomersByPaid = useMemo(() => {
     const totals = new Map<string, { customerId: string; customerName: string; paid: number }>();
@@ -441,9 +497,10 @@ export default function PosPage() {
 
   async function reloadPaymentData(nextSelectedInvoice?: PosInvoice | null) {
     if (!profile) return;
-    const [invoiceRows, paymentRows] = await Promise.all([getInvoices(profile), getPayments(profile)]);
+    const [invoiceRows, paymentRows, quotationRows] = await Promise.all([getInvoices(profile), getPayments(profile), getQuotations(profile)]);
     setDashboardInvoices(invoiceRows);
     setDashboardPayments(paymentRows);
+    setDashboardQuotations(quotationRows);
     if (nextSelectedInvoice) {
       setSelectedPaymentInvoice(invoiceRows.find((row) => row.invoiceId === nextSelectedInvoice.invoiceId) || nextSelectedInvoice);
     }
@@ -754,7 +811,7 @@ export default function PosPage() {
                     </button>
                   </div>
                 ))}
-                {outstandingInvoices.length === 0 ? <div className="text-sm text-zinc-500">No outstanding invoices match this search.</div> : null}
+                {outstandingInvoices.length === 0 ? <div className="text-sm text-zinc-500">No outstanding invoice/job/quotation found for this search.</div> : null}
               </div>
             </div>
 
@@ -805,7 +862,13 @@ export default function PosPage() {
               <form onSubmit={handleQuickPayment} className="mt-4 space-y-3">
                 <div className="rounded-2xl border border-white/10 bg-[#151515] p-4">
                   <div className="text-sm font-semibold text-white">{selectedPaymentInvoice.customerName}</div>
-                  <div className="mt-1 text-xs text-zinc-500">{selectedPaymentInvoice.invoiceNo} {selectedPaymentInvoice.jobId ? `· ${selectedPaymentInvoice.jobId}` : ''}</div>
+                  <div className="mt-1 text-xs text-zinc-500">{selectedPaymentInvoice.customerPhone || 'No phone'}</div>
+                  <div className="mt-1 text-xs text-zinc-500">
+                    Invoice {selectedPaymentInvoice.invoiceNo || selectedPaymentInvoice.invoiceId}
+                    {selectedPaymentInvoice.jobId ? ` · Job ${selectedPaymentInvoice.jobId}` : ''}
+                    {selectedPaymentInvoice.quotationId ? ` · Quotation ${selectedPaymentInvoice.quotationId}` : ''}
+                  </div>
+                  <div className="mt-1 text-xs capitalize text-zinc-500">Payment status: {selectedPaymentInvoice.paymentStatus}</div>
                   <div className="mt-3 flex items-center justify-between text-sm">
                     <span className="text-zinc-400">Outstanding</span>
                     <span className="font-semibold text-orange-200">{formatCurrency(selectedPaymentInvoice.balance)}</span>
