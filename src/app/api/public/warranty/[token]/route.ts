@@ -161,6 +161,53 @@ function safeJobWarranty(
   };
 }
 
+function signedSnapshotFromWarranty(input: {
+  sourceType: 'job_warranty' | 'pos_warranty';
+  warrantyId: string;
+  warranty: ReturnType<typeof safeWarranty> | ReturnType<typeof safeJobWarranty>;
+  data: FirebaseFirestore.DocumentData;
+  signerName: string;
+  signerPhone: string;
+  signatureDataUrl: string;
+  typedSignature: string;
+  token: string;
+  ip: string;
+  userAgent: string;
+  signedAt: string;
+}) {
+  return {
+    sourceType: input.sourceType,
+    warrantyId: input.warrantyId,
+    warrantyNumber: input.warranty.warrantyNumber,
+    signedAt: input.signedAt,
+    signerName: input.signerName,
+    signerPhone: input.signerPhone,
+    signatureDataUrl: input.signatureDataUrl,
+    typedSignature: input.typedSignature,
+    acceptedTerms: true,
+    tokenUsed: input.token,
+    ip: input.ip,
+    userAgent: input.userAgent,
+    warrantyTitle: input.warranty.coveredItem || 'Warranty',
+    warrantyDurationDays: input.warranty.warrantyDurationDays,
+    startDate: input.warranty.startDate,
+    endDate: input.warranty.endDate,
+    description: String(input.data.description || input.data.itemName || input.warranty.coveredItem || ''),
+    termsVersion: input.warranty.warrantyTermsVersion || input.warranty.terms.version,
+    termsText: String(input.data.warrantyPolicyText || ''),
+    terms: input.warranty.terms,
+    customerName: input.warranty.customerName,
+    customerPhone: input.warranty.customerPhone,
+    jobId: String(input.data.jobId || ''),
+    jobNumber: input.warranty.jobNumber,
+    invoiceId: String(input.data.invoiceId || ''),
+    invoiceNo: input.warranty.invoiceNo,
+    deviceName: input.warranty.deviceName,
+    branchId: input.warranty.branchId,
+    claimLimit: input.warranty.claimLimit,
+  };
+}
+
 async function writePublicAudit(warrantyId: string, data: FirebaseFirestore.DocumentData) {
   await adminDb.collection('auditLogs').add({
     entityType: 'pos',
@@ -235,6 +282,24 @@ export async function POST(request: NextRequest, context: { params: Promise<{ to
         return NextResponse.json({ error: 'Signature image is too large. Please clear and sign again.' }, { status: 400 });
       }
 
+      const job = await getLinkedJob(String(jobWarranty.data.jobId || '')).catch(() => null);
+      const signedAt = new Date().toISOString();
+      const ip = request.headers.get('x-forwarded-for') || '';
+      const userAgent = request.headers.get('user-agent') || '';
+      const signedWarrantySnapshot = signedSnapshotFromWarranty({
+        sourceType: 'job_warranty',
+        warrantyId: jobWarranty.warrantyId,
+        warranty: safeJobWarranty(jobWarranty.warrantyId, jobWarranty.data, job),
+        data: jobWarranty.data,
+        signerName,
+        signerPhone,
+        signatureDataUrl,
+        typedSignature,
+        token,
+        ip,
+        userAgent,
+        signedAt,
+      });
       await adminDb.collection('jobDocuments').doc(jobWarranty.warrantyId).update({
         acceptedTerms: true,
         warrantySignedAt: FieldValue.serverTimestamp(),
@@ -243,6 +308,9 @@ export async function POST(request: NextRequest, context: { params: Promise<{ to
         warrantySignatureDataUrl: signatureDataUrl,
         warrantyTypedSignature: typedSignature,
         warrantySignatureTokenUsed: token,
+        warrantySignedIp: ip,
+        warrantySignedUserAgent: userAgent,
+        signedWarrantySnapshot,
         updatedAt: FieldValue.serverTimestamp(),
       });
       await adminDb.collection('auditLogs').add({
@@ -256,7 +324,6 @@ export async function POST(request: NextRequest, context: { params: Promise<{ to
         createdAt: FieldValue.serverTimestamp(),
       }).catch(() => undefined);
       const latest = await adminDb.collection('jobDocuments').doc(jobWarranty.warrantyId).get();
-      const job = await getLinkedJob(String(jobWarranty.data.jobId || '')).catch(() => null);
       return NextResponse.json({
         warranty: safeJobWarranty(jobWarranty.warrantyId, latest.data() || jobWarranty.data, job),
         message: 'Warranty agreement signed. Genius Advanced has received your acknowledgement.',
@@ -283,6 +350,27 @@ export async function POST(request: NextRequest, context: { params: Promise<{ to
       return NextResponse.json({ error: 'Signature image is too large. Please clear and sign again.' }, { status: 400 });
     }
 
+    const [job, invoice] = await Promise.all([
+      getLinkedJob(String(warranty.data.jobId || '')).catch(() => null),
+      getLinkedInvoice(String(warranty.data.invoiceId || '')).catch(() => null),
+    ]);
+    const signedAt = new Date().toISOString();
+    const ip = request.headers.get('x-forwarded-for') || '';
+    const userAgent = request.headers.get('user-agent') || '';
+    const signedWarrantySnapshot = signedSnapshotFromWarranty({
+      sourceType: 'pos_warranty',
+      warrantyId: warranty.warrantyId,
+      warranty: safeWarranty(warranty.warrantyId, warranty.data, job, invoice),
+      data: warranty.data,
+      signerName,
+      signerPhone,
+      signatureDataUrl,
+      typedSignature,
+      token,
+      ip,
+      userAgent,
+      signedAt,
+    });
     await adminDb.collection('warranties').doc(warranty.warrantyId).update({
       warrantyTermsAccepted: true,
       acceptedTerms: true,
@@ -294,8 +382,9 @@ export async function POST(request: NextRequest, context: { params: Promise<{ to
       warrantySignatureTokenUsed: token,
       warrantyTermsVersion: warranty.data.warrantyTermsVersion || termsSnapshot(warranty.data).version,
       warrantyTermsSnapshot: termsSnapshot(warranty.data),
-      warrantySignedIp: request.headers.get('x-forwarded-for') || '',
-      warrantySignedUserAgent: request.headers.get('user-agent') || '',
+      warrantySignedIp: ip,
+      warrantySignedUserAgent: userAgent,
+      signedWarrantySnapshot,
       warrantySignature: {
         name: signerName,
         phone: signerPhone,
@@ -306,10 +395,6 @@ export async function POST(request: NextRequest, context: { params: Promise<{ to
       },
     });
     await writePublicAudit(warranty.warrantyId, warranty.data);
-    const [job, invoice] = await Promise.all([
-      getLinkedJob(String(warranty.data.jobId || '')).catch(() => null),
-      getLinkedInvoice(String(warranty.data.invoiceId || '')).catch(() => null),
-    ]);
     const jobNumber = displayJobNumber(warranty.data, job);
     const customerName = warranty.data.customerName || 'Customer';
     const technicianId = String(job?.technicianId || '').trim();

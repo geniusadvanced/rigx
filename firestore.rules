@@ -1660,6 +1660,9 @@ service cloud.firestore {
         && (!('warrantyTypedSignature' in data) || data.warrantyTypedSignature is string)
         && (!('acceptedTerms' in data) || data.acceptedTerms is bool)
         && (!('warrantySignatureTokenUsed' in data) || data.warrantySignatureTokenUsed is string)
+        && (!('warrantySignedIp' in data) || data.warrantySignedIp is string)
+        && (!('warrantySignedUserAgent' in data) || data.warrantySignedUserAgent is string)
+        && (!('signedWarrantySnapshot' in data) || data.signedWarrantySnapshot is map)
         && data.updatedAt is timestamp;
     }
 

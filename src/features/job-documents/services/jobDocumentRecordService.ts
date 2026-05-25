@@ -3,6 +3,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDoc,
   getDocs,
   query,
   serverTimestamp,
@@ -122,6 +123,12 @@ export async function getJobDocumentRecords(jobId: string): Promise<JobDocumentR
       const rightTime = right.createdAt?.toMillis?.() || 0;
       return rightTime - leftTime;
     });
+}
+
+export async function getJobDocumentRecordById(documentId: string): Promise<JobDocumentRecord> {
+  const snapshot = await getDoc(doc(db, 'jobDocuments', documentId));
+  if (!snapshot.exists()) throw new Error('Job warranty document not found');
+  return mapDocument(snapshot.id, snapshot.data());
 }
 
 export async function createJobDocumentRecord(

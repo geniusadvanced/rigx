@@ -6131,7 +6131,7 @@ export default function JobsPage() {
                                 </div>
                                 <div className={`mt-2 text-xs ${warrantySigned ? 'text-emerald-300' : 'text-amber-300'}`}>
                                   {warrantySigned
-                                    ? `Signed / Approved${record.warrantySignedName ? ` by ${record.warrantySignedName}` : ''}`
+                                    ? `Signed / Approved${record.warrantySignedName ? ` by ${record.warrantySignedName}` : ''}${record.warrantySignedAt ? ` on ${formatTimestamp(record.warrantySignedAt)}` : ''}`
                                     : 'Pending Customer Signature'}
                                 </div>
                                 {warrantyStatus === 'active' && !warrantySigned ? (
@@ -6156,6 +6156,16 @@ export default function JobsPage() {
                               >
                                 {record.type === 'warranty' ? 'Send Job Warranty for Signature via WhatsApp' : 'Send Service Report via WhatsApp'}
                               </button>
+                            ) : null}
+                            {record.type === 'warranty' && warrantySigned ? (
+                              <a
+                                href={`/dashboard/documents/job-warranties/${record.documentId}/print`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="rounded-md border border-emerald-500/30 px-3 py-1.5 text-xs text-emerald-200"
+                              >
+                                View Signed Warranty
+                              </a>
                             ) : null}
                             {record.fileUrl ? (
                               <>

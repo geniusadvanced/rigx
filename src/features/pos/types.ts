@@ -1,4 +1,5 @@
 import type { Timestamp } from 'firebase/firestore';
+import type { SignedWarrantySnapshot } from '@/features/job-documents/types';
 import type { WarrantyTermsSnapshot } from './warrantyTerms';
 
 export type PosBranch = 'bangi' | 'cyberjaya';
@@ -247,6 +248,7 @@ export interface PosWarranty {
     tokenUsed: string;
   };
   warrantyTermsSnapshot?: WarrantyTermsSnapshot;
+  signedWarrantySnapshot?: SignedWarrantySnapshot;
 }
 
 export interface PosRefund {

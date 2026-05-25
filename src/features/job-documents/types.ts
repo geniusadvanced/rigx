@@ -30,10 +30,53 @@ export interface JobDocumentRecord {
   warrantyTypedSignature?: string;
   acceptedTerms?: boolean;
   warrantySignatureTokenUsed?: string;
+  warrantySignedIp?: string;
+  warrantySignedUserAgent?: string;
+  signedWarrantySnapshot?: SignedWarrantySnapshot;
   createdBy: string;
   createdByDisplayName: string;
   createdAt: Timestamp;
   updatedAt: Timestamp;
+}
+
+export interface SignedWarrantySnapshot {
+  sourceType: 'job_warranty' | 'pos_warranty';
+  warrantyId: string;
+  warrantyNumber: string;
+  signedAt: string;
+  signerName: string;
+  signerPhone: string;
+  signatureDataUrl?: string;
+  typedSignature?: string;
+  acceptedTerms: true;
+  tokenUsed: string;
+  ip?: string;
+  userAgent?: string;
+  warrantyTitle: string;
+  warrantyDurationDays: number;
+  startDate: string | null;
+  endDate: string | null;
+  description: string;
+  termsVersion?: string;
+  termsText?: string;
+  terms?: {
+    coverage: string[];
+    exclusions: string[];
+    claimProcess: string[];
+    claimLimit: string;
+    voidConditions: string[];
+    acknowledgement: string;
+    version?: string;
+  };
+  customerName: string;
+  customerPhone: string;
+  jobId?: string;
+  jobNumber?: string;
+  invoiceId?: string;
+  invoiceNo?: string;
+  deviceName: string;
+  branchId: string;
+  claimLimit: string;
 }
 
 export interface CreateJobDocumentInput {

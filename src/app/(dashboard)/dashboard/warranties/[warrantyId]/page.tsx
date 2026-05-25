@@ -157,7 +157,7 @@ export default function WarrantyDetailPage() {
             href={`/dashboard/documents/warranties/${warranty.warrantyId}/print`}
             className="mb-4 flex w-full justify-center rounded-xl border border-orange-500/20 bg-[#141414] px-4 py-2 text-sm text-orange-200"
           >
-            Official print view
+            {warranty.warrantySignedAt ? 'View Signed Warranty' : 'Official print view'}
           </Link>
           <h2 className="text-lg font-semibold text-white">Create Warranty Claim</h2>
           <form onSubmit={handleCreateClaim} className="mt-4 grid gap-3">
