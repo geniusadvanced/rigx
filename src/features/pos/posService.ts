@@ -15,6 +15,7 @@ import {
 } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { writeAuditLog } from '@/features/audit/services/auditLogService';
+import { updateCustomerMasterActivity } from '@/features/customers/services/customerService';
 import { calculateTechnicianCommission } from '@/features/commissions/commissionCalculator';
 import { DEFAULT_COMMISSION_PERCENTAGE, DEFAULT_COMMISSION_RULE_NAME } from '@/features/commissions/constants';
 import {
@@ -1219,6 +1220,14 @@ export async function createQuotation(input: PosDocumentInput, user: UserData): 
     ],
     note: 'Quotation created',
   });
+  await updateCustomerMasterActivity({
+    customerId: input.customerId,
+    customerName: input.customerName,
+    customerPhone: input.customerPhone,
+    branch: input.branchId,
+    source: 'quotation',
+    jobId: input.jobId,
+  }, user).catch(() => undefined);
   const quotationSnapshot = await getDoc(quotationRef);
   return mapQuotation(quotationRef.id, quotationSnapshot.data() || {});
 }
@@ -1613,6 +1622,15 @@ export async function createInvoice(input: PosDocumentInput & { quotationId?: st
     changes: [{ field: 'total', before: null, after: totals.total }],
     note: 'Invoice created',
   });
+  await updateCustomerMasterActivity({
+    customerId: input.customerId,
+    customerName: input.customerName,
+    customerPhone: input.customerPhone,
+    branch: input.branchId,
+    source: 'invoice',
+    jobId: input.jobId,
+    invoiceId: invoiceRef.id,
+  }, user).catch(() => undefined);
   const invoiceSnapshot = await getDoc(invoiceRef);
   return mapInvoice(invoiceRef.id, invoiceSnapshot.data() || {});
 }
@@ -1696,6 +1714,16 @@ export async function recordInvoicePayment(invoice: PosInvoice, input: {
     changes: [{ field: 'amountPaid', before: invoice.amountPaid, after: nextPaid }],
     note: `Payment ${paymentRef.id} recorded`,
   });
+  await updateCustomerMasterActivity({
+    customerId: invoice.customerId,
+    customerName: invoice.customerName,
+    customerPhone: invoice.customerPhone,
+    branch: invoice.branchId,
+    source: 'payment',
+    jobId: invoice.jobId,
+    invoiceId: invoice.invoiceId,
+    amountSpent: amount,
+  }, user).catch(() => undefined);
   if (paymentStatus === 'paid') {
     await activateWarrantiesFromInvoice({ ...invoice, amountPaid: nextPaid, balance, paymentStatus }, user);
   }

@@ -9,6 +9,8 @@ import {
   Timestamp,
   updateDoc,
   where,
+  increment,
+  arrayUnion,
 } from 'firebase/firestore';
 import { writeAuditLog } from '@/features/audit/services/auditLogService';
 import { db } from '@/lib/firebase/init';
@@ -16,7 +18,7 @@ import { generateCustomerNumber } from '@/lib/numbering/publicNumberService';
 import { assertCan, can } from '@/lib/rbac/can';
 import { normalizeMalaysiaPhoneNumber } from '@/lib/utils/phone';
 import type { Job, Role, UserData } from '@/types';
-import type { Customer, CustomerBranch, CustomerFormInput, Device, DeviceFormInput } from '../types';
+import type { Customer, CustomerBranch, CustomerFormInput, CustomerSource, Device, DeviceFormInput } from '../types';
 
 function displayNameForUser(user: UserData): string {
   return user.displayName || user.name || 'Unknown User';
@@ -44,6 +46,13 @@ function normalizeText(value: string): string {
 
 function normalizeBranch(value: CustomerBranch): CustomerBranch {
   if (value === 'cyberjaya' || value === 'bangi') return value;
+  return 'unknown';
+}
+
+function normalizeImportBranch(value?: string | null): CustomerBranch {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized.includes('cyber')) return 'cyberjaya';
+  if (normalized.includes('bangi')) return 'bangi';
   return 'unknown';
 }
 
@@ -84,6 +93,13 @@ function buildCustomerPayload(input: CustomerFormInput) {
     email: normalizeText(input.email),
     address: normalizeText(input.address),
     branch: normalizeBranch(input.branch),
+  };
+}
+
+function customerMasterBase(source: CustomerSource) {
+  return {
+    source,
+    sources: arrayUnion(source),
   };
 }
 
@@ -174,6 +190,11 @@ export async function createCustomer(input: CustomerFormInput, user: UserData): 
   const customerRef = await addDoc(collection(db, 'customers'), {
     ...payload,
     customerNumber,
+    ...customerMasterBase('manual'),
+    notes: '',
+    tags: [],
+    totalJobs: 0,
+    totalSpent: 0,
     createdBy: user.uid,
     createdByDisplayName: displayNameForUser(user),
     createdAt: serverTimestamp(),
@@ -264,7 +285,7 @@ export async function createOrUpdateCustomerFromJobInput(input: JobCustomerInput
     if ((user.role === 'manager' || user.role === 'technician') && userBranch && matchedCustomer.branch !== userBranch) {
       throw new Error('Selected customer is outside your branch');
     }
-    const updates: Record<string, unknown> = { updatedAt: serverTimestamp() };
+    const updates: Record<string, unknown> = { ...customerMasterBase('job'), updatedAt: serverTimestamp() };
     const changes: Array<{ field: string; before: unknown; after: unknown }> = [];
     const nextCustomerNumber = matchedCustomer.customerNumber || await generateCustomerNumber();
     if (!matchedCustomer.customerNumber) {
@@ -379,6 +400,11 @@ export async function createOrUpdateCustomerFromJobInput(input: JobCustomerInput
   const customerPayload = {
     ...payload,
     customerNumber,
+    ...customerMasterBase('job'),
+    notes: '',
+    tags: [],
+    totalJobs: 0,
+    totalSpent: 0,
     createdBy: user.uid,
     createdByDisplayName: displayNameForUser(user),
     createdAt: serverTimestamp(),
@@ -444,6 +470,189 @@ export async function createOrUpdateCustomerFromJobInput(input: JobCustomerInput
     createdAt: Timestamp.now(),
     updatedAt: Timestamp.now(),
   };
+}
+
+export interface CustomerImportRow {
+  fullName?: string;
+  phone?: string;
+  secondaryPhone?: string;
+  email?: string;
+  address?: string;
+  branch?: string;
+  notes?: string;
+}
+
+export interface CustomerImportResult {
+  totalRows: number;
+  created: number;
+  updated: number;
+  skippedInvalid: number;
+  duplicates: number;
+  messages: string[];
+}
+
+async function findCustomerMatch(input: { normalizedPhone?: string; email?: string; branch?: CustomerBranch }): Promise<Customer | null> {
+  const normalizedPhone = normalizeText(input.normalizedPhone || '');
+  const email = normalizeText(input.email || '').toLowerCase();
+  if (normalizedPhone) {
+    const snapshot = await getDocs(query(collection(db, 'customers'), where('normalizedPhone', '==', normalizedPhone)));
+    const match = snapshot.docs
+      .map((customerDoc) => mapCustomer(customerDoc.id, customerDoc.data()))
+      .find((customer) => customer.isDeleted !== true);
+    if (match) return match;
+  }
+  if (email) {
+    const snapshot = await getDocs(query(collection(db, 'customers'), where('email', '==', email)));
+    const match = snapshot.docs
+      .map((customerDoc) => mapCustomer(customerDoc.id, customerDoc.data()))
+      .find((customer) => customer.isDeleted !== true);
+    if (match) return match;
+  }
+  return null;
+}
+
+export async function importCustomerRows(
+  rows: CustomerImportRow[],
+  user: UserData,
+  mode: 'add_new_only' | 'update_missing' | 'overwrite_existing' = 'add_new_only',
+): Promise<CustomerImportResult> {
+  assertCan(user.role, 'customers.manage');
+  const result: CustomerImportResult = {
+    totalRows: rows.length,
+    created: 0,
+    updated: 0,
+    skippedInvalid: 0,
+    duplicates: 0,
+    messages: [],
+  };
+
+  for (const [index, row] of rows.entries()) {
+    const fullName = normalizeText(row.fullName || row.phone || '');
+    const phone = normalizeText(row.phone || '');
+    const normalizedPhone = normalizeCustomerPhone(phone);
+    const email = normalizeText(row.email || '').toLowerCase();
+    const address = normalizeText(row.address || '');
+    const branch = normalizeImportBranch(row.branch);
+    const notes = normalizeText(row.notes || '');
+    const secondaryPhone = normalizeText(row.secondaryPhone || '');
+    if (!fullName && !phone) {
+      result.skippedInvalid += 1;
+      result.messages.push(`Row ${index + 1}: skipped because name or phone is required.`);
+      continue;
+    }
+
+    const matchedCustomer = await findCustomerMatch({ normalizedPhone, email, branch });
+    if (matchedCustomer) {
+      result.duplicates += 1;
+      if (mode === 'add_new_only') continue;
+      const updates: Record<string, unknown> = {
+        ...customerMasterBase('import'),
+        updatedAt: serverTimestamp(),
+      };
+      if (mode === 'overwrite_existing' || (!matchedCustomer.fullName && fullName)) updates.fullName = fullName;
+      if (mode === 'overwrite_existing' || (!matchedCustomer.phone && phone)) updates.phone = phone;
+      if ((mode === 'overwrite_existing' || !matchedCustomer.normalizedPhone) && normalizedPhone) updates.normalizedPhone = normalizedPhone;
+      if (mode === 'overwrite_existing' || (!matchedCustomer.email && email)) updates.email = email;
+      if (mode === 'overwrite_existing' || (!matchedCustomer.address && address)) updates.address = address;
+      if (mode === 'overwrite_existing' || !matchedCustomer.secondaryPhone) updates.secondaryPhone = secondaryPhone;
+      if (mode === 'overwrite_existing' || !matchedCustomer.notes) updates.notes = notes;
+      if ((mode === 'overwrite_existing' || matchedCustomer.branch === 'unknown') && branch !== 'unknown') updates.branch = branch;
+      await updateDoc(doc(db, 'customers', matchedCustomer.customerId), updates);
+      result.updated += 1;
+      continue;
+    }
+
+    const customerNumber = await generateCustomerNumber();
+    await addDoc(collection(db, 'customers'), {
+      fullName,
+      phone,
+      normalizedPhone,
+      secondaryPhone,
+      email,
+      address,
+      branch,
+      customerNumber,
+      ...customerMasterBase('import'),
+      notes,
+      tags: [],
+      totalJobs: 0,
+      totalSpent: 0,
+      createdBy: user.uid,
+      createdByDisplayName: displayNameForUser(user),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    result.created += 1;
+  }
+
+  return result;
+}
+
+export async function updateCustomerMasterActivity(input: {
+  customerId?: string;
+  customerName?: string;
+  customerPhone?: string;
+  customerEmail?: string;
+  branch?: CustomerBranch | string;
+  source: CustomerSource;
+  jobId?: string;
+  invoiceId?: string;
+  amountSpent?: number;
+}, user: UserData): Promise<void> {
+  if (!can(user.role, 'customers.manage') && !can(user.role, 'pos.operate') && !can(user.role, 'jobs.create')) return;
+  const normalizedPhone = normalizeCustomerPhone(input.customerPhone || '');
+  const email = normalizeText(input.customerEmail || '').toLowerCase();
+  const branch = normalizeImportBranch(input.branch);
+  let customer: Customer | null = null;
+  if (input.customerId) {
+    const snapshot = await getDoc(doc(db, 'customers', input.customerId));
+    if (snapshot.exists() && snapshot.data().isDeleted !== true) customer = mapCustomer(snapshot.id, snapshot.data());
+  }
+  if (!customer) customer = await findCustomerMatch({ normalizedPhone, email, branch });
+
+  const updates: Record<string, unknown> = {
+    ...customerMasterBase(input.source),
+    updatedAt: serverTimestamp(),
+    lastVisitAt: serverTimestamp(),
+  };
+  if (input.jobId) updates.lastJobId = input.jobId;
+  if (input.invoiceId) updates.lastInvoiceId = input.invoiceId;
+  if (input.source === 'job' && input.jobId) updates.totalJobs = increment(1);
+  if (Number(input.amountSpent || 0) > 0) updates.totalSpent = increment(Number(input.amountSpent || 0));
+
+  if (customer) {
+    if (!customer.fullName && input.customerName) updates.fullName = normalizeText(input.customerName);
+    if (!customer.phone && input.customerPhone) updates.phone = normalizeText(input.customerPhone);
+    if (!customer.normalizedPhone && normalizedPhone) updates.normalizedPhone = normalizedPhone;
+    if (!customer.email && email) updates.email = email;
+    if (customer.branch === 'unknown' && branch !== 'unknown') updates.branch = branch;
+    await updateDoc(doc(db, 'customers', customer.customerId), updates);
+    return;
+  }
+
+  if (!input.customerName && !input.customerPhone) return;
+  const customerNumber = await generateCustomerNumber();
+  await addDoc(collection(db, 'customers'), {
+    fullName: normalizeText(input.customerName || input.customerPhone || 'Unknown Customer'),
+    phone: normalizeText(input.customerPhone || ''),
+    normalizedPhone,
+    email,
+    address: '',
+    branch,
+    customerNumber,
+    ...customerMasterBase(input.source),
+    notes: '',
+    tags: [],
+    lastJobId: input.jobId || '',
+    lastInvoiceId: input.invoiceId || '',
+    lastVisitAt: serverTimestamp(),
+    totalJobs: 0,
+    totalSpent: Number(input.amountSpent || 0),
+    createdBy: user.uid,
+    createdByDisplayName: displayNameForUser(user),
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
 }
 
 export async function updateCustomer(customer: Customer, input: CustomerFormInput, user: UserData): Promise<void> {

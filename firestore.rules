@@ -1396,11 +1396,20 @@ service cloud.firestore {
         && data.fullName != ''
         && (!('customerNumber' in data) || (data.customerNumber is string && data.customerNumber.matches('^RIGX-[0-9]{6}$')))
         && data.phone is string
-        && data.phone != ''
         && (!('normalizedPhone' in data) || data.normalizedPhone is string)
+        && (!('secondaryPhone' in data) || data.secondaryPhone is string)
         && data.email is string
         && data.address is string
         && data.branch in ['cyberjaya', 'bangi', 'unknown']
+        && (!('source' in data) || data.source is string)
+        && (!('sources' in data) || data.sources is list)
+        && (!('notes' in data) || data.notes is string)
+        && (!('tags' in data) || data.tags is list)
+        && (!('lastJobId' in data) || data.lastJobId is string)
+        && (!('lastInvoiceId' in data) || data.lastInvoiceId is string)
+        && (!('lastVisitAt' in data) || data.lastVisitAt is timestamp)
+        && (!('totalJobs' in data) || data.totalJobs is number)
+        && (!('totalSpent' in data) || data.totalSpent is number)
         && (!('isDeleted' in data) || data.isDeleted is bool)
         && (!('deletedAt' in data) || data.deletedAt is timestamp)
         && (!('deletedBy' in data) || data.deletedBy is string)
@@ -1453,9 +1462,19 @@ service cloud.firestore {
           'fullName',
           'phone',
           'normalizedPhone',
+          'secondaryPhone',
           'email',
           'address',
           'branch',
+          'source',
+          'sources',
+          'notes',
+          'tags',
+          'lastJobId',
+          'lastInvoiceId',
+          'lastVisitAt',
+          'totalJobs',
+          'totalSpent',
           'updatedAt'
         ])
         && (!('customerNumber' in resource.data) || request.resource.data.customerNumber == resource.data.customerNumber);

@@ -1,6 +1,7 @@
 import type { Timestamp } from 'firebase/firestore';
 
 export type CustomerBranch = 'cyberjaya' | 'bangi' | 'unknown';
+export type CustomerSource = 'manual' | 'job' | 'pos' | 'invoice' | 'quotation' | 'warranty' | 'payment' | 'import';
 
 export interface Customer {
   customerId: string;
@@ -8,9 +9,19 @@ export interface Customer {
   fullName: string;
   phone: string;
   normalizedPhone?: string;
+  secondaryPhone?: string;
   email: string;
   address: string;
   branch: CustomerBranch;
+  source?: CustomerSource | string;
+  sources?: string[];
+  notes?: string;
+  tags?: string[];
+  lastJobId?: string;
+  lastInvoiceId?: string;
+  lastVisitAt?: Timestamp;
+  totalJobs?: number;
+  totalSpent?: number;
   createdBy: string;
   createdByDisplayName: string;
   createdAt: Timestamp;

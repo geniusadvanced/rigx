@@ -46,6 +46,7 @@ import {
   getCustomers,
   getDevices,
   normalizeCustomerPhone,
+  updateCustomerMasterActivity,
 } from '@/features/customers/services/customerService';
 import type { Customer, CustomerBranch, Device } from '@/features/customers/types';
 import {
@@ -1808,6 +1809,15 @@ export default function JobsPage() {
       let createdJob: Job;
       try {
         createdJob = await createJob(jobPayload);
+        await updateCustomerMasterActivity({
+          customerId: linkedCustomer.customerId,
+          customerName: linkedCustomer.fullName || newJob.customerName,
+          customerPhone: linkedCustomer.phone || newJob.customerPhone,
+          customerEmail: linkedCustomer.email || newJob.customerEmail,
+          branch: branchId,
+          source: 'job',
+          jobId: createdJob.docId,
+        }, profile).catch(() => undefined);
         warnTechnicianAddJobDebug({
           checkpoint: 'addJob:jobCreate:success',
           ...addJobDebugBase,
