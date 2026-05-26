@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { loginWithEmail } from '@/lib/firebase/auth';
+import { loginWithEmail, sendResetPasswordEmail } from '@/lib/firebase/auth';
 import { useUser } from '@/lib/hooks/useUser';
 
 export default function LoginPage() {
@@ -12,6 +12,11 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetSubmitting, setResetSubmitting] = useState(false);
+  const [resetMessage, setResetMessage] = useState('');
+  const [resetError, setResetError] = useState('');
 
   useEffect(() => {
     if (!loading && firebaseUser) router.replace('/dashboard');
@@ -29,6 +34,43 @@ export default function LoginPage() {
       setError(caughtError instanceof Error ? caughtError.message : 'Unable to sign in');
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  function openResetModal() {
+    setResetEmail(email);
+    setResetMessage('');
+    setResetError('');
+    setShowResetModal(true);
+  }
+
+  async function handlePasswordReset(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setResetSubmitting(true);
+    setResetMessage('');
+    setResetError('');
+
+    const trimmedEmail = resetEmail.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      setResetError('Please enter a valid email address.');
+      setResetSubmitting(false);
+      return;
+    }
+
+    try {
+      await sendResetPasswordEmail(trimmedEmail);
+      setResetMessage('If this email is registered, a password reset link has been sent.');
+    } catch (caughtError) {
+      const code = typeof caughtError === 'object' && caughtError && 'code' in caughtError
+        ? String((caughtError as { code?: unknown }).code || '')
+        : '';
+      if (code === 'auth/invalid-email') {
+        setResetError('Please enter a valid email address.');
+      } else {
+        setResetError('Unable to send reset link right now. Please check your connection and try again.');
+      }
+    } finally {
+      setResetSubmitting(false);
     }
   }
 
@@ -74,6 +116,16 @@ export default function LoginPage() {
           />
         </label>
 
+        <div className="mt-3 text-right">
+          <button
+            type="button"
+            onClick={openResetModal}
+            className="text-sm font-medium text-orange-200 hover:text-orange-100"
+          >
+            Forgot Password?
+          </button>
+        </div>
+
         {error ? <div className="mt-5 rounded-2xl border border-red-500/25 bg-red-950/40 px-4 py-3 text-sm text-red-200">{error}</div> : null}
 
         <button
@@ -84,6 +136,51 @@ export default function LoginPage() {
           {submitting ? 'Signing in' : 'Sign in'}
         </button>
       </form>
+
+      {showResetModal ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-10">
+          <form
+            onSubmit={handlePasswordReset}
+            className="w-full max-w-md rounded-3xl border border-orange-500/20 bg-[#151515] p-7 shadow-[0_24px_80px_rgba(0,0,0,0.65)]"
+          >
+            <div className="mb-6">
+              <h2 className="text-xl font-semibold text-white">Reset Password</h2>
+              <p className="mt-2 text-sm leading-6 text-zinc-400">
+                Enter your registered email address and we will send a password reset link.
+              </p>
+            </div>
+
+            <label className="block text-sm text-zinc-300">
+              Email address
+              <input
+                type="email"
+                value={resetEmail}
+                onChange={(event) => setResetEmail(event.target.value)}
+                required
+                className="mt-2 h-12 w-full rounded-2xl border border-white/10 bg-[#101010] px-4 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-orange-500/40 focus:shadow-[0_0_24px_rgba(249,115,22,0.10)]"
+              />
+            </label>
+
+            {resetMessage ? <div className="mt-5 rounded-2xl border border-emerald-500/25 bg-emerald-950/30 px-4 py-3 text-sm text-emerald-200">{resetMessage}</div> : null}
+            {resetError ? <div className="mt-5 rounded-2xl border border-red-500/25 bg-red-950/40 px-4 py-3 text-sm text-red-200">{resetError}</div> : null}
+
+            <button
+              type="submit"
+              disabled={resetSubmitting}
+              className="mt-6 h-12 w-full rounded-2xl bg-gradient-to-r from-[#C96A2B] to-[#F97316] px-4 text-sm font-semibold text-white shadow-[0_0_26px_rgba(249,115,22,0.14)] transition hover:from-[#D97706] hover:to-[#FB923C] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {resetSubmitting ? 'Sending reset link' : 'Send Reset Link'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowResetModal(false)}
+              className="mt-3 h-11 w-full rounded-2xl border border-white/10 px-4 text-sm font-semibold text-zinc-300 transition hover:border-orange-500/30 hover:text-orange-100"
+            >
+              Back to Login
+            </button>
+          </form>
+        </div>
+      ) : null}
     </main>
   );
 }

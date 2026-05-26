@@ -1,5 +1,6 @@
 import {
   onAuthStateChanged,
+  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signOut,
   type UserCredential,
@@ -13,6 +14,10 @@ export function observeAuthState(callback: (user: User | null) => void) {
 
 export function loginWithEmail(email: string, password: string): Promise<UserCredential> {
   return signInWithEmailAndPassword(auth, email, password);
+}
+
+export function sendResetPasswordEmail(email: string): Promise<void> {
+  return sendPasswordResetEmail(auth, email);
 }
 
 export function logout(): Promise<void> {
