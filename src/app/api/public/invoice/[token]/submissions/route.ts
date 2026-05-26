@@ -47,6 +47,8 @@ async function createNotification(data: FirebaseFirestore.DocumentData, invoiceI
     message: `${customerName} has submitted payment proof for ${jobNumber}. Next step: verify payment.`,
     branchId: data.branchId || '',
     targetUserIds: technicianId ? [technicianId] : [],
+    relatedModule: 'payment',
+    actionUrl: '/dashboard/pos/payment-submissions',
     relatedEntityType: 'paymentSubmission',
     relatedEntityId: submissionId,
     metadata: {
@@ -58,6 +60,7 @@ async function createNotification(data: FirebaseFirestore.DocumentData, invoiceI
       customerName,
       technicianId,
       nextAction,
+      actionUrl: '/dashboard/pos/payment-submissions',
     },
   });
 }

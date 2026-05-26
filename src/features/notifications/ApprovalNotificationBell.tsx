@@ -1,9 +1,21 @@
 'use client';
 
-import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
-import { Bell, CheckCheck, FileCheck2 } from 'lucide-react';
-import { arrayUnion, collection, getDocs, query, updateDoc, where, doc, type Timestamp } from 'firebase/firestore';
+import { useRouter } from 'next/navigation';
+import { Bell, CheckCheck, ExternalLink, FileCheck2, X } from 'lucide-react';
+import {
+  arrayUnion,
+  collection,
+  doc,
+  getDocs,
+  onSnapshot,
+  query,
+  updateDoc,
+  where,
+  type DocumentData,
+  type Query,
+  type Timestamp,
+} from 'firebase/firestore';
 import { db } from '@/lib/firebase/init';
 import { isAdmin, isManager } from '@/lib/rbac/can';
 import type { UserData } from '@/types';
@@ -14,17 +26,24 @@ interface ApprovalNotification {
   message: string;
   type: string;
   branchId?: string;
+  actionUrl?: string;
+  relatedModule?: string;
   targetRoles?: string[];
   targetUserIds?: string[];
   relatedEntityType?: string;
   relatedEntityId?: string;
   metadata?: {
+    actionUrl?: string;
+    relatedModule?: string;
     jobId?: string;
     jobNumber?: string;
+    quotationId?: string;
+    customerId?: string;
     nextAction?: string;
     warrantyId?: string;
     checklistId?: string;
     invoiceId?: string;
+    paymentId?: string;
     submissionId?: string;
   };
   readBy?: string[];
@@ -41,19 +60,44 @@ function formatTime(value?: Timestamp): string {
   }).format(date);
 }
 
-function notificationHref(notification: ApprovalNotification): string {
+function notificationAction(notification: ApprovalNotification): { href: string; label: string } | null {
   const metadata = notification.metadata || {};
-  if (metadata.jobId) return '/dashboard/jobs';
+  const actionUrl = notification.actionUrl || metadata.actionUrl;
+  if (actionUrl) return { href: actionUrl, label: actionLabel(notification) };
   if (notification.relatedEntityType === 'quotation' && notification.relatedEntityId) {
-    return `/dashboard/pos/quotations/${notification.relatedEntityId}`;
+    return { href: `/dashboard/pos/quotations/${notification.relatedEntityId}`, label: 'Open Quotation' };
   }
-  if (notification.relatedEntityType === 'warranty' && notification.relatedEntityId) {
-    return `/dashboard/documents/warranties/${notification.relatedEntityId}/print`;
+  if (metadata.quotationId) return { href: `/dashboard/pos/quotations/${metadata.quotationId}`, label: 'Open Quotation' };
+  if (notification.relatedEntityType === 'warranty' && notification.relatedEntityId) return { href: `/dashboard/warranties/${notification.relatedEntityId}`, label: 'Open Warranty' };
+  if (metadata.warrantyId) return { href: `/dashboard/warranties/${metadata.warrantyId}`, label: 'Open Warranty' };
+  if (notification.relatedEntityType === 'paymentSubmission') {
+    return { href: '/dashboard/pos/payment-submissions', label: 'Open Payment' };
   }
-  if (notification.relatedEntityType === 'paymentSubmission') return '/dashboard/pos/payment-submissions';
-  if (notification.relatedEntityType === 'deviceChecklist') return '/dashboard/jobs';
-  if (notification.relatedEntityType === 'job') return '/dashboard/jobs';
-  return '/dashboard';
+  if (notification.relatedEntityType === 'invoice' && notification.relatedEntityId) return { href: `/dashboard/pos/invoices/${notification.relatedEntityId}`, label: 'Open Invoice' };
+  if (metadata.invoiceId) return { href: `/dashboard/pos/invoices/${metadata.invoiceId}`, label: 'Open Invoice' };
+  if (notification.relatedEntityType === 'warrantyClaim' && notification.relatedEntityId) return { href: '/dashboard/warranty-claims', label: 'Open Warranty Claim' };
+  if (metadata.customerId) return { href: `/dashboard/customers/${metadata.customerId}`, label: 'Open Customer' };
+  if (notification.relatedEntityType === 'customer' && notification.relatedEntityId) return { href: `/dashboard/customers/${notification.relatedEntityId}`, label: 'Open Customer' };
+  if (metadata.jobId) return { href: `/dashboard/jobs?jobId=${encodeURIComponent(metadata.jobId)}`, label: 'Open Job' };
+  if (notification.relatedEntityType === 'job' && notification.relatedEntityId) return { href: `/dashboard/jobs?jobId=${encodeURIComponent(notification.relatedEntityId)}`, label: 'Open Job' };
+  if (notification.relatedEntityType === 'deviceChecklist' && metadata.jobId) return { href: `/dashboard/jobs?jobId=${encodeURIComponent(metadata.jobId)}`, label: 'Open Job' };
+  return null;
+}
+
+function actionLabel(notification: ApprovalNotification): string {
+  const type = `${notification.type} ${notification.relatedEntityType || ''} ${notification.relatedModule || ''}`.toLowerCase();
+  if (type.includes('quotation')) return 'Open Quotation';
+  if (type.includes('payment')) return 'Open Payment';
+  if (type.includes('warrantyclaim')) return 'Open Warranty Claim';
+  if (type.includes('warranty')) return 'Open Warranty';
+  if (type.includes('customer')) return 'Open Customer';
+  if (type.includes('job') || type.includes('checklist')) return 'Open Job';
+  if (type.includes('invoice')) return 'Open Invoice';
+  return 'Open Related Record';
+}
+
+function moduleLabel(notification: ApprovalNotification): string {
+  return notification.relatedModule || notification.relatedEntityType || notification.type || '-';
 }
 
 function isRelevant(notification: ApprovalNotification, user: UserData): boolean {
@@ -65,39 +109,66 @@ function isRelevant(notification: ApprovalNotification, user: UserData): boolean
   return false;
 }
 
+function sortNotifications(rows: ApprovalNotification[]): ApprovalNotification[] {
+  return rows
+    .sort((left, right) => (right.createdAt?.toMillis?.() || 0) - (left.createdAt?.toMillis?.() || 0))
+    .slice(0, 12);
+}
+
+function mapNotificationRows(snapshotDocs: Array<{ id: string; data: () => DocumentData }>, user: UserData): ApprovalNotification[] {
+  const rows = snapshotDocs
+    .map((row) => ({ ...(row.data() as Omit<ApprovalNotification, 'notificationId'>), notificationId: row.id }))
+    .filter((row) => isRelevant(row, user));
+  const uniqueRows = Array.from(new Map(rows.map((row) => [row.notificationId, row])).values());
+  return sortNotifications(uniqueRows);
+}
+
+function notificationQuery(user: UserData): Query<DocumentData> {
+  const notificationsRef = collection(db, 'notifications');
+  if (isAdmin(user.role)) return notificationsRef;
+  if (isManager(user.role) && user.branchId) return query(notificationsRef, where('branchId', '==', user.branchId));
+  return query(notificationsRef, where('targetUserIds', 'array-contains', user.uid));
+}
+
 export function ApprovalNotificationBell({ user }: { user: UserData | null }) {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
   const [notifications, setNotifications] = useState<ApprovalNotification[]>([]);
+  const [selectedNotification, setSelectedNotification] = useState<ApprovalNotification | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    async function loadNotifications() {
-      if (!user?.uid) {
-        setNotifications([]);
-        return;
-      }
-      const notificationsRef = collection(db, 'notifications');
-      const snapshot = isAdmin(user.role)
-        ? await getDocs(notificationsRef)
-        : isManager(user.role) && user.branchId
-          ? await getDocs(query(notificationsRef, where('branchId', '==', user.branchId)))
-          : await getDocs(query(notificationsRef, where('targetUserIds', 'array-contains', user.uid)));
-      if (cancelled) return;
-      const rows = snapshot.docs
-        .map((row) => ({ ...(row.data() as Omit<ApprovalNotification, 'notificationId'>), notificationId: row.id }))
-        .filter((row) => isRelevant(row, user))
-        .sort((left, right) => (right.createdAt?.toMillis?.() || 0) - (left.createdAt?.toMillis?.() || 0))
-        .slice(0, 12);
-      setNotifications(rows);
+    if (!user?.uid) {
+      setNotifications([]);
+      return () => {
+        cancelled = true;
+      };
     }
-    void loadNotifications().catch(() => {
-      if (!cancelled) setNotifications([]);
-    });
+
+    const activeQuery = notificationQuery(user);
+    const unsubscribe = onSnapshot(
+      activeQuery,
+      (snapshot) => {
+        if (!cancelled) setNotifications(mapNotificationRows(snapshot.docs, user));
+      },
+      (error) => {
+        console.warn('[NOTIFICATIONS_REALTIME_FALLBACK]', error);
+        void getDocs(activeQuery)
+          .then((snapshot) => {
+            if (!cancelled) setNotifications(mapNotificationRows(snapshot.docs, user));
+          })
+          .catch(() => {
+            if (!cancelled) setNotifications([]);
+          });
+      },
+    );
+
     return () => {
       cancelled = true;
+      unsubscribe();
     };
-  }, [user]);
+  }, [user?.branchId, user?.role, user?.uid]);
 
   const unreadCount = useMemo(
     () => notifications.filter((notification) => !notification.readBy?.includes(user?.uid || '')).length,
@@ -121,6 +192,23 @@ export function ApprovalNotificationBell({ user }: { user: UserData | null }) {
     await updateDoc(doc(db, 'notifications', notification.notificationId), {
       readBy: arrayUnion(user.uid),
     }).catch(() => undefined);
+  }
+
+  async function openNotificationDetail(notification: ApprovalNotification) {
+    setSelectedNotification(
+      user?.uid && !notification.readBy?.includes(user.uid)
+        ? { ...notification, readBy: [...(notification.readBy || []), user.uid] }
+        : notification,
+    );
+    await markRead(notification);
+  }
+
+  function openNotificationAction(notification: ApprovalNotification) {
+    const action = notificationAction(notification);
+    if (!action) return;
+    setSelectedNotification(null);
+    setOpen(false);
+    router.push(action.href);
   }
 
   async function markAllRead() {
@@ -197,14 +285,11 @@ export function ApprovalNotificationBell({ user }: { user: UserData | null }) {
             {visibleNotifications.map((notification) => {
               const unread = !notification.readBy?.includes(user?.uid || '');
               return (
-                <Link
+                <button
+                  type="button"
                   key={notification.notificationId}
-                  href={notificationHref(notification)}
-                  onClick={() => {
-                    setOpen(false);
-                    void markRead(notification);
-                  }}
-                  className={`grid grid-cols-[2.25rem_1fr_auto] items-start gap-3 rounded-xl border px-3 py-2.5 text-sm transition ${
+                  onClick={() => void openNotificationDetail(notification)}
+                  className={`grid w-full grid-cols-[2.25rem_1fr_auto] items-start gap-3 rounded-xl border px-3 py-2.5 text-left text-sm transition ${
                     unread
                       ? 'border-orange-500/35 bg-[#1b1208]'
                       : 'border-white/10 bg-[#121212] hover:border-white/20'
@@ -234,7 +319,7 @@ export function ApprovalNotificationBell({ user }: { user: UserData | null }) {
                     <div className="mt-1 text-[11px] text-zinc-500">{formatTime(notification.createdAt)}</div>
                   </div>
                   {unread ? <span className="mt-2 h-2.5 w-2.5 rounded-full bg-red-400 shadow-[0_0_10px_rgba(248,113,113,0.8)]" /> : <span />}
-                </Link>
+                </button>
               );
             })}
           </div>
@@ -246,6 +331,79 @@ export function ApprovalNotificationBell({ user }: { user: UserData | null }) {
             >
               View all notifications
             </button>
+          </div>
+        </div>
+      ) : null}
+      {selectedNotification ? (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-[#101010] shadow-2xl shadow-black/80">
+            <div className="flex items-start justify-between gap-3 border-b border-white/10 px-5 py-4">
+              <div>
+                <div className="text-xs uppercase tracking-wide text-orange-200">{moduleLabel(selectedNotification)}</div>
+                <h2 className="mt-1 text-lg font-semibold text-white">{selectedNotification.title}</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedNotification(null)}
+                className="rounded-lg border border-white/10 p-2 text-zinc-400 hover:text-white"
+                aria-label="Close notification detail"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="space-y-4 px-5 py-4">
+              <p className="text-sm leading-6 text-zinc-200">{selectedNotification.message}</p>
+              <div className="grid gap-3 rounded-xl border border-white/10 bg-[#050505] p-3 text-xs text-zinc-400 sm:grid-cols-2">
+                <div>
+                  <div className="text-zinc-500">Created</div>
+                  <div className="mt-1 text-zinc-200">{formatTime(selectedNotification.createdAt)}</div>
+                </div>
+                <div>
+                  <div className="text-zinc-500">Status</div>
+                  <div className="mt-1 text-zinc-200">{selectedNotification.readBy?.includes(user?.uid || '') ? 'Read' : 'Unread'}</div>
+                </div>
+                <div>
+                  <div className="text-zinc-500">Type</div>
+                  <div className="mt-1 text-zinc-200">{selectedNotification.type || '-'}</div>
+                </div>
+                <div>
+                  <div className="text-zinc-500">Related ID</div>
+                  <div className="mt-1 break-all text-zinc-200">{selectedNotification.relatedEntityId || selectedNotification.metadata?.jobId || selectedNotification.metadata?.quotationId || selectedNotification.metadata?.invoiceId || selectedNotification.metadata?.customerId || '-'}</div>
+                </div>
+              </div>
+              {selectedNotification.metadata?.nextAction ? (
+                <div className="rounded-xl border border-orange-500/20 bg-orange-500/10 p-3 text-sm text-orange-100">
+                  Next: {selectedNotification.metadata.nextAction}
+                </div>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 border-t border-white/10 px-5 py-4">
+              <button
+                type="button"
+                onClick={() => setSelectedNotification(null)}
+                className="rounded-lg border border-white/10 px-4 py-2 text-sm text-zinc-300 hover:text-white"
+              >
+                Close
+              </button>
+              {notificationAction(selectedNotification) ? (
+                <button
+                  type="button"
+                  onClick={() => openNotificationAction(selectedNotification)}
+                  className="inline-flex items-center gap-2 rounded-lg bg-orange-500 px-4 py-2 text-sm font-semibold text-black hover:bg-orange-400"
+                >
+                  {notificationAction(selectedNotification)?.label}
+                  <ExternalLink size={15} />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled
+                  className="rounded-lg border border-white/10 px-4 py-2 text-sm text-zinc-500"
+                >
+                  No linked record available.
+                </button>
+              )}
+            </div>
           </div>
         </div>
       ) : null}

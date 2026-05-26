@@ -97,6 +97,8 @@ async function createNotification(jobId: string, data: FirebaseFirestore.Documen
     message: `${customerName} has signed the Repair Job Sheet for ${jobNumber}. Next step: start diagnosis.`,
     branchId: data.branchId || '',
     targetUserIds: technicianId ? [technicianId] : [],
+    relatedModule: 'job',
+    actionUrl: `/dashboard/jobs?jobId=${encodeURIComponent(jobId)}`,
     metadata: {
       jobId,
       jobNumber,
@@ -107,6 +109,7 @@ async function createNotification(jobId: string, data: FirebaseFirestore.Documen
       deviceModel: deviceModel(data),
       signedAt: new Date().toISOString(),
       nextAction,
+      actionUrl: `/dashboard/jobs?jobId=${encodeURIComponent(jobId)}`,
     },
     relatedEntityType: 'job',
     relatedEntityId: jobId,

@@ -13,6 +13,8 @@ export interface ApprovalNotificationInput {
   title: string;
   message: string;
   branchId?: string;
+  relatedModule?: string;
+  actionUrl?: string;
   targetRoles?: string[];
   targetUserIds?: string[];
   relatedEntityType: string;
@@ -40,6 +42,8 @@ export async function createApprovalNotification(input: ApprovalNotificationInpu
     targetRoles: uniqueStrings(input.targetRoles?.length ? input.targetRoles : ['admin', 'manager']),
     targetUserIds: uniqueStrings(input.targetUserIds),
     metadata: input.metadata || {},
+    relatedModule: input.relatedModule || input.relatedEntityType,
+    actionUrl: input.actionUrl || '',
     relatedEntityType: input.relatedEntityType,
     relatedEntityId: input.relatedEntityId,
     sourceEventId: input.sourceEventId,
@@ -47,4 +51,3 @@ export async function createApprovalNotification(input: ApprovalNotificationInpu
     createdAt: FieldValue.serverTimestamp(),
   });
 }
-

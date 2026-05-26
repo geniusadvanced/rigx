@@ -62,7 +62,9 @@ async function createNotification(input: {
     branchId: input.branchId || '',
     targetRoles: ['admin', 'manager'],
     targetUserIds: input.targetUserIds || [],
-    metadata: input.metadata || {},
+    metadata: { ...(input.metadata || {}), actionUrl: `/dashboard/pos/quotations/${input.relatedEntityId}` },
+    relatedModule: 'quotation',
+    actionUrl: `/dashboard/pos/quotations/${input.relatedEntityId}`,
     relatedEntityType: 'quotation',
     relatedEntityId: input.relatedEntityId,
     readBy: [],
@@ -219,6 +221,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ to
       technicianId: job?.data.technicianId || '',
       totalAmount: Number(quotation.data.total || 0),
       approvalMethod: 'public_link',
+      actionUrl: `/dashboard/pos/quotations/${quotation.quotationId}`,
     };
     const targetUserIds = job?.data.technicianId ? [String(job.data.technicianId)] : [];
 
@@ -267,6 +270,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ to
         title: 'Customer approved quotation',
         message: `${notificationCustomerName} has approved quotation for ${jobNumber}. Next step: proceed with repair.`,
         branchId: quotation.data.branchId,
+        relatedModule: 'quotation',
+        actionUrl: `/dashboard/pos/quotations/${quotation.quotationId}`,
         relatedEntityType: 'quotation',
         relatedEntityId: quotation.quotationId,
         metadata: {

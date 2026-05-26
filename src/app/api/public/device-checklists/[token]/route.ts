@@ -170,6 +170,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ to
       message: `${customerName} has approved Device Checklist for ${jobNumber}. Next step: continue inspection.`,
       branchId: checklist.data.branchId || linkedJob?.branchId || '',
       targetUserIds: technicianId ? [technicianId] : [],
+      relatedModule: 'job',
+      actionUrl: checklist.data.jobId ? `/dashboard/jobs?jobId=${encodeURIComponent(String(checklist.data.jobId))}` : '/dashboard/jobs',
       relatedEntityType: 'deviceChecklist',
       relatedEntityId: checklist.checklistId,
       metadata: {
@@ -179,6 +181,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ to
         technicianId,
         checklistId: checklist.checklistId,
         nextAction,
+        actionUrl: checklist.data.jobId ? `/dashboard/jobs?jobId=${encodeURIComponent(String(checklist.data.jobId))}` : '/dashboard/jobs',
       },
     });
     const latest = await adminDb.collection('deviceChecklists').doc(checklist.checklistId).get();

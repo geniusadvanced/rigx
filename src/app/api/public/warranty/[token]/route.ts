@@ -406,6 +406,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ to
       message: `${customerName} has signed Warranty Terms for ${jobNumber}. Next step: warranty acknowledged.`,
       branchId: warranty.data.branchId || invoice?.branchId || job?.branchId || '',
       targetUserIds: technicianId ? [technicianId] : [],
+      relatedModule: 'warranty',
+      actionUrl: `/dashboard/warranties/${warranty.warrantyId}`,
       relatedEntityType: 'warranty',
       relatedEntityId: warranty.warrantyId,
       metadata: {
@@ -415,6 +417,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ to
         customerName,
         technicianId,
         nextAction,
+        actionUrl: `/dashboard/warranties/${warranty.warrantyId}`,
       },
     });
     const latest = await adminDb.collection('warranties').doc(warranty.warrantyId).get();

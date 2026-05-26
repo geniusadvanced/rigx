@@ -184,6 +184,8 @@ async function createInternalNotification(input: {
     | 'quotation_rejected'
     | 'quotation_manually_approved';
   branchId?: string;
+  relatedModule?: string;
+  actionUrl?: string;
   relatedEntityType?: 'quotation' | 'invoice' | 'paymentSubmission' | 'warranty' | 'job';
   relatedEntityId?: string;
   targetUserIds?: string[];
@@ -194,6 +196,8 @@ async function createInternalNotification(input: {
     targetRoles: ['admin', 'manager'],
     targetUserIds: input.targetUserIds || [],
     metadata: input.metadata || {},
+    relatedModule: input.relatedModule || input.relatedEntityType || '',
+    actionUrl: input.actionUrl || '',
     readBy: [],
     createdAt: serverTimestamp(),
   }).catch(() => undefined);
@@ -1400,6 +1404,8 @@ export async function approvePosQuotation(
       : `${quotation.customerName || 'Customer'} approved quotation ${quotation.quotationNo} for job ${quotationJobReference(quotation, linkedJob)}. Total: RM ${Number(quotation.total || 0).toFixed(2)}.`,
     type: manualApproval ? 'quotation_manually_approved' : 'quotation_approved',
     branchId: quotation.branchId,
+    relatedModule: 'quotation',
+    actionUrl: `/dashboard/pos/quotations/${quotation.quotationId}`,
     relatedEntityType: 'quotation',
     relatedEntityId: quotation.quotationId,
     targetUserIds: linkedJob?.technicianId ? [linkedJob.technicianId] : [],
@@ -1408,6 +1414,7 @@ export async function approvePosQuotation(
       quotationId: quotation.quotationId,
       quotationNo: quotation.quotationNo,
       customerId: quotation.customerId,
+      actionUrl: `/dashboard/pos/quotations/${quotation.quotationId}`,
       technicianId: linkedJob?.technicianId || '',
       totalAmount: Number(quotation.total || 0),
       approvalMethod,
@@ -1452,6 +1459,8 @@ export async function rejectPosQuotation(quotation: PosQuotation, reason: string
     message: `${quotation.customerName || 'Customer'} rejected quotation ${quotation.quotationNo} for job ${quotationJobReference(quotation, linkedJob)}.`,
     type: 'quotation_rejected',
     branchId: quotation.branchId,
+    relatedModule: 'quotation',
+    actionUrl: `/dashboard/pos/quotations/${quotation.quotationId}`,
     relatedEntityType: 'quotation',
     relatedEntityId: quotation.quotationId,
     targetUserIds: linkedJob?.technicianId ? [linkedJob.technicianId] : [],
@@ -1460,6 +1469,7 @@ export async function rejectPosQuotation(quotation: PosQuotation, reason: string
       quotationId: quotation.quotationId,
       quotationNo: quotation.quotationNo,
       customerId: quotation.customerId,
+      actionUrl: `/dashboard/pos/quotations/${quotation.quotationId}`,
       technicianId: linkedJob?.technicianId || '',
       totalAmount: Number(quotation.total || 0),
       rejectionMethod: 'staff',
@@ -1862,6 +1872,8 @@ export async function approvePaymentSubmission(submission: PaymentSubmission, in
     message: `${submission.customerName} payment submission was approved`,
     type: 'pos_payment',
     branchId: submission.branchId,
+    relatedModule: 'payment',
+    actionUrl: '/dashboard/pos/payment-submissions',
     relatedEntityType: 'paymentSubmission',
     relatedEntityId: submission.submissionId,
   });
@@ -1892,6 +1904,8 @@ export async function rejectPaymentSubmission(submission: PaymentSubmission, rea
     message: `${submission.customerName} payment submission was rejected`,
     type: 'pos_payment',
     branchId: submission.branchId,
+    relatedModule: 'payment',
+    actionUrl: '/dashboard/pos/payment-submissions',
     relatedEntityType: 'paymentSubmission',
     relatedEntityId: submission.submissionId,
   });
