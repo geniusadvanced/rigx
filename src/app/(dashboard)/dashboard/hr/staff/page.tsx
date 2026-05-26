@@ -5,11 +5,13 @@ import {
   createStaffProfile,
   deactivateStaff,
   getStaffList,
+  recordStaffInviteFallbackSent,
   updateStaffProfile,
   updateStaffSalary,
 } from '@/features/hr/services/hrService';
 import type { EmploymentType, StaffProfile, StaffProfileCreate, StaffProfileUpdate } from '@/features/hr/types';
 import type { Role } from '@/types';
+import { sendResetPasswordEmail } from '@/lib/firebase/auth';
 import { useUser } from '@/lib/hooks/useUser';
 import { can, isAdmin } from '@/lib/rbac/can';
 
@@ -75,7 +77,8 @@ function getInviteStatusLabel(staff: StaffProfile): string {
   if (!staff.hasLogin) return 'No Login';
   if (staff.inviteEmailStatus === 'sent') return 'Invite Sent';
   if (staff.inviteEmailStatus === 'failed') return 'Failed';
-  return 'Not Sent';
+  if (staff.inviteEmailStatus === 'pending') return 'Pending';
+  return staff.isActive ? 'Active' : 'Inactive';
 }
 
 export default function StaffPage() {
@@ -85,6 +88,7 @@ export default function StaffPage() {
   const [profileForm, setProfileForm] = useState<StaffProfileUpdate | null>(null);
   const [createForm, setCreateForm] = useState<StaffProfileCreate | null>(null);
   const [staffPendingLogin, setStaffPendingLogin] = useState<StaffProfile | null>(null);
+  const [staffPendingDelete, setStaffPendingDelete] = useState<StaffProfile | null>(null);
   const [salaryValue, setSalaryValue] = useState('');
   const [resetPasswordLink, setResetPasswordLink] = useState('');
   const [pageLoading, setPageLoading] = useState(false);
@@ -232,7 +236,7 @@ export default function StaffPage() {
   }
 
   async function handleCreateLoginAccount(staff: StaffProfile) {
-    if (!firebaseUser?.uid) {
+    if (!firebaseUser?.uid || !profile?.role) {
       setMessage('Current user is not loaded');
       return;
     }
@@ -268,12 +272,29 @@ export default function StaffPage() {
         throw new Error(result.error || 'Unable to create login account');
       }
 
-      setResetPasswordLink(result.inviteEmailSent ? '' : result.resetPasswordLink || '');
-      setMessage(
-        result.inviteEmailSent
-          ? 'Login account created and invite email sent.'
-          : `Login account created. Email invite was not sent: ${result.inviteEmailError || 'unknown email error'}`,
-      );
+      if (result.inviteEmailSent) {
+        setResetPasswordLink('');
+        setMessage('Login account created. Invite Sent.');
+      } else {
+        try {
+          await sendResetPasswordEmail(staff.email);
+          await recordStaffInviteFallbackSent({
+            uid: result.uid || staff.uid,
+            sentBy: firebaseUser.uid,
+            sentByRole: profile.role,
+            email: staff.email,
+          });
+          setResetPasswordLink('');
+          setMessage('Login account created. Invite email provider failed, so Firebase password setup email was sent instead.');
+        } catch (fallbackError) {
+          setResetPasswordLink(result.resetPasswordLink || '');
+          setMessage(
+            `Login account created, but invite email failed and Firebase fallback email could not be sent: ${
+              fallbackError instanceof Error ? fallbackError.message : result.inviteEmailError || 'unknown email error'
+            }`,
+          );
+        }
+      }
       await loadStaff();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to create login account');
@@ -284,7 +305,7 @@ export default function StaffPage() {
   }
 
   async function handleResendInvite(staff: StaffProfile) {
-    if (!firebaseUser?.uid) {
+    if (!firebaseUser?.uid || !profile?.role) {
       setMessage('Current user is not loaded');
       return;
     }
@@ -317,15 +338,74 @@ export default function StaffPage() {
         throw new Error(result.error || 'Unable to resend invite');
       }
 
-      setResetPasswordLink(result.inviteEmailSent ? '' : result.resetPasswordLink || '');
-      setMessage(
-        result.inviteEmailSent
-          ? 'Invite email resent.'
-          : `Invite email was not sent: ${result.inviteEmailError || 'unknown email error'}`,
-      );
+      if (result.inviteEmailSent) {
+        setResetPasswordLink('');
+        setMessage('Invite Sent.');
+      } else {
+        try {
+          await sendResetPasswordEmail(staff.email);
+          await recordStaffInviteFallbackSent({
+            uid: staff.uid,
+            sentBy: firebaseUser.uid,
+            sentByRole: profile.role,
+            email: staff.email,
+          });
+          setResetPasswordLink('');
+          setMessage('Invite email provider failed, so Firebase password setup email was sent instead.');
+        } catch (fallbackError) {
+          setResetPasswordLink(result.resetPasswordLink || '');
+          setMessage(
+            `Invite email failed and Firebase fallback email could not be sent: ${
+              fallbackError instanceof Error ? fallbackError.message : result.inviteEmailError || 'unknown email error'
+            }`,
+          );
+        }
+      }
       await loadStaff();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to resend invite');
+    } finally {
+      setActionId('');
+    }
+  }
+
+  async function handleDeleteStaff(staff: StaffProfile) {
+    if (!firebaseUser?.uid || !isAdmin(profile?.role)) {
+      setMessage('Admin access required');
+      return;
+    }
+
+    if (staff.uid === firebaseUser.uid) {
+      setMessage('You cannot delete your own account.');
+      setStaffPendingDelete(null);
+      return;
+    }
+
+    setActionId(`delete-${staff.uid}`);
+    setMessage('');
+
+    try {
+      const token = await firebaseUser.getIdToken();
+      const response = await fetch('/api/admin/delete-staff-user', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ staffUid: staff.uid }),
+      });
+      const result = (await response.json()) as { deleted?: boolean; error?: string };
+      if (!response.ok) throw new Error(result.error || 'Unable to delete staff user');
+
+      setMessage('Staff user deleted.');
+      setStaffPendingDelete(null);
+      if (selectedStaff?.uid === staff.uid) {
+        setSelectedStaff(null);
+        setProfileForm(null);
+      }
+      await loadStaff();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to delete staff user');
     } finally {
       setActionId('');
     }
@@ -349,7 +429,7 @@ export default function StaffPage() {
       {message ? <div className="mb-4 text-sm text-slate-300">{message}</div> : null}
       {resetPasswordLink ? (
         <div className="mb-4 rounded-lg border border-red-700/50 bg-red-950/20 p-4">
-          <div className="text-sm font-semibold text-red-100">Invite failed. Fallback reset password link</div>
+          <div className="text-sm font-semibold text-red-100">Invite failed. Manual fallback password setup link</div>
           <div className="mt-2 break-all text-sm text-red-100">{resetPasswordLink}</div>
           <button
             type="button"
@@ -422,7 +502,7 @@ export default function StaffPage() {
                         staff.isActive ? 'border-emerald-500/40 text-emerald-300' : 'border-white/15 text-slate-400'
                       }`}
                     >
-                      {staff.isActive ? 'active' : 'inactive'}
+                      {staff.isActive ? 'Active' : 'Inactive'}
                     </span>
                   </td>
                   <td className="px-3 py-3">
@@ -469,6 +549,16 @@ export default function StaffPage() {
                           {actionId === `resend-invite-${staff.uid}` ? 'Resending' : 'Resend Invite'}
                         </button>
                       ) : null}
+                      {canEditProfile ? (
+                        <button
+                          type="button"
+                          onClick={() => setStaffPendingDelete(staff)}
+                          disabled={Boolean(actionId) || staff.uid === firebaseUser?.uid}
+                          className="rounded-md border border-red-700/60 px-3 py-2 text-xs text-red-300 hover:bg-red-950/40 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {actionId === `delete-${staff.uid}` ? 'Deleting' : 'Delete'}
+                        </button>
+                      ) : null}
                     </div>
                   </td>
                 </tr>
@@ -508,6 +598,38 @@ export default function StaffPage() {
                 className="rounded-md bg-[#F97316] px-4 py-2 text-sm font-medium text-white hover:bg-[#FB923C] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {actionId === `create-login-${staffPendingLogin.uid}` ? 'Creating Login' : 'Confirm and Create Login'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {staffPendingDelete ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#050505]/80 p-4">
+          <div className="w-full max-w-lg rounded-lg border border-red-800/50 bg-[#151515] p-5 shadow-xl">
+            <div className="text-lg font-semibold text-white">Delete Staff User</div>
+            <div className="mt-2 text-sm text-slate-300">
+              Are you sure you want to delete this user? This action cannot be undone.
+            </div>
+            <div className="mt-4 rounded-md border border-white/10 bg-[#050505] p-3 text-sm text-slate-300">
+              <div className="font-medium text-white">{staffPendingDelete.displayName || staffPendingDelete.name || 'Unknown User'}</div>
+              <div className="mt-1">{staffPendingDelete.email || staffPendingDelete.staffId || staffPendingDelete.uid}</div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setStaffPendingDelete(null)}
+                className="rounded-md border border-white/10 px-3 py-2 text-sm text-slate-300 hover:bg-[#1A1A1A]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteStaff(staffPendingDelete)}
+                disabled={Boolean(actionId)}
+                className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {actionId === `delete-${staffPendingDelete.uid}` ? 'Deleting' : 'Delete User'}
               </button>
             </div>
           </div>

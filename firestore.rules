@@ -101,6 +101,7 @@ service cloud.firestore {
         'hr.staff_updated',
         'hr.salary_updated',
         'hr.staff_deactivated',
+        'hr.staff_deleted',
         'attendance.status_overridden',
         'job_document.removed'
       ];
@@ -154,7 +155,8 @@ service cloud.firestore {
               'hr.invite_resent',
               'hr.staff_updated',
               'hr.salary_updated',
-              'hr.staff_deactivated'
+              'hr.staff_deactivated',
+              'hr.staff_deleted'
             ]
             && request.resource.data.staffUid is string
             && request.resource.data.targetCollection == 'users'
@@ -2295,7 +2297,7 @@ service cloud.firestore {
         && request.resource.data.uid == userId
         && hasValidStaffProfile(request.resource.data);
       allow update: if isAdmin() && hasValidStaffProfile(request.resource.data);
-      allow delete: if isAdmin();
+      allow delete: if false;
     }
 
     match /payroll/{payrollId} {

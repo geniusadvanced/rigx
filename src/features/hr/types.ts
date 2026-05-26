@@ -21,6 +21,7 @@ export interface StaffProfile {
   hasLogin?: boolean;
   inviteEmailSent?: boolean;
   inviteEmailStatus?: InviteEmailStatus;
+  deleted?: boolean;
   createdAt?: Timestamp;
   joinedAt?: Timestamp;
   updatedAt?: Timestamp;

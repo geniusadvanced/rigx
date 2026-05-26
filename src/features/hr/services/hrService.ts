@@ -1,4 +1,5 @@
 import {
+  addDoc,
   collection,
   doc,
   getDoc,
@@ -8,6 +9,7 @@ import {
   runTransaction,
   serverTimestamp,
   Timestamp,
+  updateDoc,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase/init';
 import { assertCan } from '@/lib/rbac/can';
@@ -44,6 +46,13 @@ interface DeactivateStaffParams {
   uid: string;
   deactivatedBy: string;
   deactivatedByRole: Role;
+}
+
+interface RecordInviteFallbackSentParams {
+  uid: string;
+  sentBy: string;
+  sentByRole: Role;
+  email: string;
 }
 
 function createAuditRef() {
@@ -145,7 +154,9 @@ export async function createStaffProfile(params: CreateStaffProfileParams): Prom
 
 export async function getStaffList(): Promise<StaffProfile[]> {
   const snapshot = await getDocs(query(collection(db, 'users'), orderBy('staffId')));
-  return snapshot.docs.map((staffDoc) => mapStaffDocument(staffDoc.id, staffDoc.data()));
+  return snapshot.docs
+    .map((staffDoc) => mapStaffDocument(staffDoc.id, staffDoc.data()))
+    .filter((staff) => staff.deleted !== true);
 }
 
 export async function getStaffById(uid: string): Promise<StaffProfile | null> {
@@ -269,5 +280,32 @@ export async function deactivateStaff(params: DeactivateStaffParams): Promise<vo
       metadata: {},
       createdAt: serverTimestamp(),
     });
+  });
+}
+
+export async function recordStaffInviteFallbackSent(params: RecordInviteFallbackSentParams): Promise<void> {
+  assertCan(params.sentByRole, 'hr.manage');
+
+  await updateDoc(doc(db, 'users', params.uid), {
+    inviteEmailSent: true,
+    inviteEmailStatus: 'sent',
+    inviteEmailSentAt: serverTimestamp(),
+    inviteEmailFallbackProvider: 'firebase_password_reset',
+    updatedAt: serverTimestamp(),
+  });
+
+  await addDoc(collection(db, 'audit_logs'), {
+    actorId: params.sentBy,
+    action: 'hr.invite_sent',
+    targetCollection: 'users',
+    targetId: params.uid,
+    userId: params.sentBy,
+    staffUid: params.uid,
+    generatedAt: serverTimestamp(),
+    metadata: {
+      email: params.email,
+      fallbackProvider: 'firebase_password_reset',
+    },
+    createdAt: serverTimestamp(),
   });
 }
