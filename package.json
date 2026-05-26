@@ -17,12 +17,14 @@
     "lucide-react": "^0.468.0",
     "next": "latest",
     "pdf-parse": "^2.4.5",
+    "qrcode": "^1.5.4",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
     "stripe": "^20.0.0"
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^4.0.1",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "19.2.14",
     "autoprefixer": "^10.4.20",
     "eslint": "^9.39.4",

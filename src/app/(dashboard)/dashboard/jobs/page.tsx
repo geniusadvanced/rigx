@@ -646,6 +646,7 @@ export default function JobsPage() {
   const { profile } = useUser();
   const { jobs, loading, error, refetch } = useJobs(profile?.role ? profile : null);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const [handledQueryJobId, setHandledQueryJobId] = useState('');
   const [documents, setDocuments] = useState<JobDocument[]>([]);
   const [extractions, setExtractions] = useState<Record<string, JobDocumentExtraction>>({});
   const [extractionEdits, setExtractionEdits] = useState<Record<string, JobDocumentExtractedData>>({});
@@ -1059,6 +1060,29 @@ export default function JobsPage() {
       return matchesStatus && matchesSla && matchesOverdue && matchesTechnician && matchesBranch && matchesSearch;
     });
   }, [allPartsOrders, branchFilter, jobSearch, jobs, overdueOnly, slaFilter, statusFilter, technicianFilter]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || loading || error) return;
+    const queryJobId = new URLSearchParams(window.location.search).get('jobId')?.trim() || '';
+    if (!queryJobId || handledQueryJobId === queryJobId) return;
+    const match = jobs.find((job) => (
+      job.docId === queryJobId
+      || job.jobNo === queryJobId
+      || job.jobNumber === queryJobId
+      || job.jobSheetNo === queryJobId
+      || job.agnJobNumber === queryJobId
+    ));
+    setHandledQueryJobId(queryJobId);
+    if (match) {
+      setSelectedJob(match);
+      setMessage('');
+      requestAnimationFrame(() => {
+        document.getElementById('job-detail-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+      return;
+    }
+    setMessage('Job not found or you do not have permission to view this job.');
+  }, [error, handledQueryJobId, jobs, loading]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1883,7 +1907,8 @@ export default function JobsPage() {
       setSelectedJobPriceItems([]);
       setJobPriceItemSearch('');
       setShowAddJob(false);
-      setMessage(`Job created: ${getDisplayJobNumber(createdJob)}`);
+      setSelectedJob(createdJob);
+      setMessage(`Job created: ${getDisplayJobNumber(createdJob)}. You can print the job label from the job detail panel.`);
       await refetch();
     } catch (createError) {
       warnJobPagePermissionSourceIfNeeded(createError, {
@@ -4743,6 +4768,12 @@ export default function JobsPage() {
                           Job Sheet
                         </Link>
                         <Link
+                          href={`/dashboard/documents/job-label/${job.docId}/print`}
+                          className="rounded-md border border-orange-500/30 px-3 py-1.5 text-xs font-medium text-orange-200 hover:bg-[#1F160E]"
+                        >
+                          Job Label
+                        </Link>
+                        <Link
                           href={`/dashboard/documents/repair-reports/${job.docId}/print`}
                           className="rounded-md border border-orange-500/30 px-3 py-1.5 text-xs font-medium text-orange-200 hover:bg-[#1F160E]"
                         >
@@ -4788,7 +4819,7 @@ export default function JobsPage() {
       </div>
 
       {selectedJob ? (
-        <div className="mt-6 rounded-lg border border-white/10 bg-[#151515] p-4">
+        <div id="job-detail-panel" className="mt-6 rounded-lg border border-white/10 bg-[#151515] p-4">
           <div className="flex flex-col justify-between gap-3 border-b border-white/10 pb-4 md:flex-row md:items-start">
             <div>
               <h2 className="text-lg font-semibold text-white">Job Documentation</h2>
@@ -4797,13 +4828,21 @@ export default function JobsPage() {
                 {selectedJob.deviceModel || selectedJob.device}
               </p>
             </div>
-            <div className="text-sm text-slate-300">
-              Required:{' '}
-              {missingRequiredDocuments.length === 0 ? (
-                <span className="text-emerald-300">complete</span>
-              ) : (
-                <span className="text-amber-300">{missingRequiredDocuments.join(', ')}</span>
-              )}
+            <div className="flex flex-wrap items-center gap-2 text-sm text-slate-300">
+              <div>
+                Required:{' '}
+                {missingRequiredDocuments.length === 0 ? (
+                  <span className="text-emerald-300">complete</span>
+                ) : (
+                  <span className="text-amber-300">{missingRequiredDocuments.join(', ')}</span>
+                )}
+              </div>
+              <Link
+                href={`/dashboard/documents/job-label/${selectedJob.docId}/print`}
+                className="rounded-md border border-orange-500/30 px-3 py-2 text-xs font-medium text-orange-200 hover:bg-[#1F160E]"
+              >
+                Print Job Label
+              </Link>
             </div>
           </div>
 
