@@ -45,6 +45,18 @@ export async function getUserData(uid: string): Promise<UserData | null> {
   }
 }
 
+function normalizeBranchId(value?: string | null): string {
+  const normalized = String(value || '').trim().toLowerCase();
+  const compact = normalized.replace(/[\s_-]+/g, '');
+  if (compact === 'bangi') return 'bangi';
+  if (compact === 'cyberjaya') return 'cyberjaya';
+  return normalized;
+}
+
+function userBranchQueryValue(user: UserData): string {
+  return normalizeBranchId(user.branchId);
+}
+
 export async function getJobsForUser(user: UserData): Promise<Job[]> {
   if (user.role === 'technician') {
     assertCan(user.role, 'jobs.view.assigned');
@@ -66,6 +78,32 @@ export async function getJobsForUser(user: UserData): Promise<Job[]> {
 
     try {
       snapshot = await getDocs(technicianJobsQuery);
+    } catch (error) {
+      console.error('[PERMISSION ERROR]', 'getJobsForUser', error);
+      throw error;
+    }
+
+    return snapshot.docs.map((jobDoc) => ({
+      docId: jobDoc.id,
+      ...(jobDoc.data() as Omit<Job, 'docId'>),
+    }));
+  }
+
+  if (user.role === 'manager') {
+    const branchId = userBranchQueryValue(user);
+    if (!branchId) return [];
+
+    console.log('[DEBUG READ]', 'getJobsForUser', 'jobs', {
+      filters: [['branchId', '==', branchId]],
+      uid: user.uid,
+      role: user.role,
+      branchId,
+    });
+
+    let snapshot;
+
+    try {
+      snapshot = await getDocs(query(jobsRef, where('branchId', '==', branchId)));
     } catch (error) {
       console.error('[PERMISSION ERROR]', 'getJobsForUser', error);
       throw error;
@@ -110,13 +148,19 @@ const readableJobReferenceFields = [
 
 function canReadJob(user: UserData, job: Job): boolean {
   if (user.role === 'technician') return job.technicianId === user.uid;
+  if (user.role === 'manager') {
+    const managerBranch = normalizeBranchId(user.branchId);
+    const jobBranch = normalizeBranchId(job.branchId);
+    return Boolean(managerBranch && jobBranch && managerBranch === jobBranch);
+  }
   return true;
 }
 
 async function getJobByDocId(user: UserData, jobId: string): Promise<Job | null> {
   if (jobId.includes('/')) return null;
 
-  const snapshot = await getDoc(doc(db, rootCollections.jobs, jobId));
+  const snapshot = await getDoc(doc(db, rootCollections.jobs, jobId)).catch(() => null);
+  if (!snapshot) return null;
   if (!snapshot.exists()) return null;
 
   const job = {
@@ -145,6 +189,7 @@ export async function getJobForUserByIdentifier(user: UserData, identifier: stri
 
   const normalizedIdentifier = identifier.trim();
   if (!normalizedIdentifier) return null;
+  if (user.role === 'manager' && !userBranchQueryValue(user)) return null;
 
   const directJob = await getJobByDocId(user, normalizedIdentifier);
   if (directJob) return directJob;
@@ -157,7 +202,13 @@ export async function getJobForUserByIdentifier(user: UserData, identifier: stri
 
   const jobsRef = collection(db, rootCollections.jobs);
   for (const field of readableJobReferenceFields) {
-    const snapshot = await getDocs(query(jobsRef, where(field, '==', normalizedIdentifier), limit(1)));
+    const lookupQuery = user.role === 'manager'
+      ? query(jobsRef, where(field, '==', normalizedIdentifier), where('branchId', '==', userBranchQueryValue(user)), limit(1))
+      : user.role === 'technician'
+        ? query(jobsRef, where(field, '==', normalizedIdentifier), where('technicianId', '==', user.uid), limit(1))
+        : query(jobsRef, where(field, '==', normalizedIdentifier), limit(1));
+    const snapshot = await getDocs(lookupQuery).catch(() => null);
+    if (!snapshot) continue;
     const jobDoc = snapshot.docs[0];
     if (!jobDoc) continue;
 

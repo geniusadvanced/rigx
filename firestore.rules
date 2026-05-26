@@ -618,6 +618,20 @@ service cloud.firestore {
         && resource.data.technicianId == request.auth.uid;
     }
 
+    function isManagerBranchJobResource() {
+      return isManager()
+        && resource.data.branchId is string
+        && branchMatchesCurrentUser(resource.data.branchId);
+    }
+
+    function canReadJobResource() {
+      return isAdmin() || isManagerBranchJobResource() || isAssignedJobResource();
+    }
+
+    function canWriteJobResource() {
+      return isAdmin() || isManagerBranchJobResource() || isAssignedJobResource();
+    }
+
     function isValidJobDocumentType(type) {
       return type in [
         'checklist',
@@ -2464,10 +2478,11 @@ service cloud.firestore {
     }
 
     match /jobs/{jobId} {
-      allow read: if isAdminOrManager() || isAssignedJobResource();
+      allow read: if canReadJobResource();
       allow create: if isTechnicianJobCreate(request.resource.data, jobId)
         || isAdminManagerJobCreate(request.resource.data, jobId);
-      allow update: if isJobApprovalUpdate() || isJobCommissionUpdate() || isJobRequirementUpdate() || isJobLifecycleUpdate() || isJobDetailsUpdate() || isJobAssignmentUpdate() || isJobQuotationUpdate() || isJobQuotationAttachmentUpdate(jobId) || isJobPaymentSummaryUpdate() || isJobPublicTrackingUpdate() || isJobSheetConsentTokenUpdate() || isJobSheetManualConsentUpdate();
+      allow update: if canWriteJobResource()
+        && (isJobApprovalUpdate() || isJobCommissionUpdate() || isJobRequirementUpdate() || isJobLifecycleUpdate() || isJobDetailsUpdate() || isJobAssignmentUpdate() || isJobQuotationUpdate() || isJobQuotationAttachmentUpdate(jobId) || isJobPaymentSummaryUpdate() || isJobPublicTrackingUpdate() || isJobSheetConsentTokenUpdate() || isJobSheetManualConsentUpdate());
       allow delete: if isAdmin();
     }
 

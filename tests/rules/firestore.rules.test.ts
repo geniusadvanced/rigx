@@ -214,14 +214,33 @@ describe("RIGX Firestore security rules", () => {
     }
   });
 
-  it("allows managers current broad admin-manager reads and updates", async () => {
+  it("limits managers to matching branch jobs", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().doc("jobs/cyberjaya-job").set(jobDoc({
+        jobNo: "RIGX-260088",
+        jobNumber: "RIGX-260088",
+        jobSheetNo: "RIGX-260088",
+        branchId: "cyberjaya",
+        technicianId: "otherTech",
+      }));
+    });
     const db = testEnv.authenticatedContext("manager").firestore();
 
     await assertSucceeds(db.doc("jobs/assigned").get());
     await assertSucceeds(db.doc("jobs/unassigned").get());
+    await assertFails(db.doc("jobs/cyberjaya-job").get());
+    await assertSucceeds(db.collection("jobs").where("branchId", "==", "bangi").get());
+    await assertFails(db.collection("jobs").where("branchId", "==", "cyberjaya").get());
     await assertSucceeds(db.doc("payroll/tech_2026-05").get());
     await assertSucceeds(
       db.doc("jobs/assigned").update({
+        ...lifecycleUpdate("diagnosis", "diagnosis", "manager", {
+          diagnosisStartedAt: ts,
+        }),
+      }),
+    );
+    await assertFails(
+      db.doc("jobs/cyberjaya-job").update({
         ...lifecycleUpdate("diagnosis", "diagnosis", "manager", {
           diagnosisStartedAt: ts,
         }),
