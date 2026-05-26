@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { Bell, CheckCheck, ExternalLink, FileCheck2, X } from 'lucide-react';
 import {
@@ -132,10 +133,50 @@ function notificationQuery(user: UserData): Query<DocumentData> {
 
 export function ApprovalNotificationBell({ user }: { user: UserData | null }) {
   const router = useRouter();
+  const bellButtonRef = useRef<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
   const [notifications, setNotifications] = useState<ApprovalNotification[]>([]);
   const [selectedNotification, setSelectedNotification] = useState<ApprovalNotification | null>(null);
+  const [mounted, setMounted] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(false);
+  const [desktopPanelStyle, setDesktopPanelStyle] = useState<CSSProperties>({ top: 64, right: 12 });
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    function syncViewportMode() {
+      setIsDesktop(window.matchMedia('(min-width: 768px)').matches);
+    }
+
+    syncViewportMode();
+    window.addEventListener('resize', syncViewportMode);
+    return () => window.removeEventListener('resize', syncViewportMode);
+  }, []);
+
+  useEffect(() => {
+    if (!open || !isDesktop) return;
+
+    function syncDesktopPanelPosition() {
+      const rect = bellButtonRef.current?.getBoundingClientRect();
+      if (!rect) return;
+
+      setDesktopPanelStyle({
+        top: Math.max(12, rect.bottom + 8),
+        right: Math.max(12, window.innerWidth - rect.right),
+      });
+    }
+
+    syncDesktopPanelPosition();
+    window.addEventListener('resize', syncDesktopPanelPosition);
+    window.addEventListener('scroll', syncDesktopPanelPosition, true);
+    return () => {
+      window.removeEventListener('resize', syncDesktopPanelPosition);
+      window.removeEventListener('scroll', syncDesktopPanelPosition, true);
+    };
+  }, [isDesktop, open]);
 
   useEffect(() => {
     let cancelled = false;
@@ -226,23 +267,19 @@ export function ApprovalNotificationBell({ user }: { user: UserData | null }) {
     )));
   }
 
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((current) => !current)}
-        className="relative rounded-2xl border border-white/10 bg-[#151515] p-2.5 text-zinc-200 shadow-lg shadow-black/20 hover:border-orange-500/40 hover:text-orange-200"
-        aria-label="Approval notifications"
-      >
-        <Bell size={18} />
-        {unreadCount > 0 ? (
-          <span className="absolute -right-2 -top-2 flex h-[1.35rem] min-w-[1.35rem] items-center justify-center rounded-full border-2 border-[#050505] bg-red-500 px-1.5 text-center text-[11px] font-extrabold leading-none text-white shadow-[0_0_14px_rgba(239,68,68,0.7)]">
-            {unreadCount > 99 ? '99+' : unreadCount}
-          </span>
-        ) : null}
-      </button>
-      {open ? (
-        <div className="fixed inset-x-3 bottom-3 z-[80] flex max-h-[80vh] w-auto max-w-none flex-col overflow-hidden rounded-2xl border border-orange-500/20 bg-[#050505] shadow-2xl shadow-black/80 ring-1 ring-orange-500/10 md:absolute md:inset-x-auto md:bottom-auto md:right-0 md:z-50 md:mt-2 md:max-h-[420px] md:w-[420px] md:max-w-[calc(100vw-24px)]">
+  const notificationPanel = mounted && open
+    ? createPortal(
+      <>
+        <button
+          type="button"
+          aria-label="Close notifications"
+          onClick={() => setOpen(false)}
+          className="fixed inset-0 z-[9998] bg-black/55 md:hidden"
+        />
+        <div
+          style={isDesktop ? desktopPanelStyle : undefined}
+          className="fixed inset-x-3 bottom-[calc(12px+env(safe-area-inset-bottom))] z-[9999] flex max-h-[min(80vh,560px)] w-auto max-w-none flex-col overflow-hidden rounded-2xl border border-orange-500/20 bg-[#050505] shadow-2xl shadow-black/80 ring-1 ring-orange-500/10 md:inset-x-auto md:bottom-auto md:max-h-[420px] md:w-[420px] md:max-w-[calc(100vw-24px)]"
+        >
           <div className="shrink-0 border-b border-white/10 bg-[#080808] px-4 py-3">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -306,11 +343,12 @@ export function ApprovalNotificationBell({ user }: { user: UserData | null }) {
                       : 'border-white/10 bg-[#121212] hover:border-white/20'
                   }`}
                 >
-                  <div className={`flex h-9 w-9 items-center justify-center rounded-lg border ${
-                    unread
-                      ? 'border-orange-400/40 bg-orange-500/15 text-orange-200'
-                      : 'border-white/10 bg-[#1a1a1a] text-zinc-400'
-                  }`}
+                  <div
+                    className={`flex h-9 w-9 items-center justify-center rounded-lg border ${
+                      unread
+                        ? 'border-orange-400/40 bg-orange-500/15 text-orange-200'
+                        : 'border-white/10 bg-[#1a1a1a] text-zinc-400'
+                    }`}
                   >
                     <FileCheck2 size={17} />
                   </div>
@@ -344,80 +382,106 @@ export function ApprovalNotificationBell({ user }: { user: UserData | null }) {
             </button>
           </div>
         </div>
-      ) : null}
-      {selectedNotification ? (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/70 p-3 sm:p-4">
-          <div className="flex max-h-[calc(100vh-24px)] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#101010] shadow-2xl shadow-black/80 sm:max-h-[calc(100vh-32px)]">
-            <div className="flex items-start justify-between gap-3 border-b border-white/10 px-5 py-4">
+      </>,
+      document.body,
+    )
+    : null;
+
+  const notificationDetailModal = mounted && selectedNotification
+    ? createPortal(
+      <div className="fixed inset-0 z-[10010] flex items-center justify-center bg-black/70 p-3 sm:p-4">
+        <div className="flex max-h-[85vh] w-[calc(100vw-24px)] max-w-lg flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#101010] shadow-2xl shadow-black/80">
+          <div className="flex items-start justify-between gap-3 border-b border-white/10 px-5 py-4">
+            <div>
+              <div className="text-xs uppercase tracking-wide text-orange-200">{moduleLabel(selectedNotification)}</div>
+              <h2 className="mt-1 text-lg font-semibold text-white">{selectedNotification.title}</h2>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSelectedNotification(null)}
+              className="rounded-lg border border-white/10 p-2 text-zinc-400 hover:text-white"
+              aria-label="Close notification detail"
+            >
+              <X size={16} />
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+            <p className="text-sm leading-6 text-zinc-200">{selectedNotification.message}</p>
+            <div className="grid gap-3 rounded-xl border border-white/10 bg-[#050505] p-3 text-xs text-zinc-400 sm:grid-cols-2">
               <div>
-                <div className="text-xs uppercase tracking-wide text-orange-200">{moduleLabel(selectedNotification)}</div>
-                <h2 className="mt-1 text-lg font-semibold text-white">{selectedNotification.title}</h2>
+                <div className="text-zinc-500">Created</div>
+                <div className="mt-1 text-zinc-200">{formatTime(selectedNotification.createdAt)}</div>
               </div>
+              <div>
+                <div className="text-zinc-500">Status</div>
+                <div className="mt-1 text-zinc-200">{selectedNotification.readBy?.includes(user?.uid || '') ? 'Read' : 'Unread'}</div>
+              </div>
+              <div>
+                <div className="text-zinc-500">Type</div>
+                <div className="mt-1 text-zinc-200">{selectedNotification.type || '-'}</div>
+              </div>
+              <div>
+                <div className="text-zinc-500">Related ID</div>
+                <div className="mt-1 break-all text-zinc-200">{selectedNotification.relatedEntityId || selectedNotification.metadata?.jobId || selectedNotification.metadata?.quotationId || selectedNotification.metadata?.invoiceId || selectedNotification.metadata?.customerId || '-'}</div>
+              </div>
+            </div>
+            {selectedNotification.metadata?.nextAction ? (
+              <div className="rounded-xl border border-orange-500/20 bg-orange-500/10 p-3 text-sm text-orange-100">
+                Next: {selectedNotification.metadata.nextAction}
+              </div>
+            ) : null}
+          </div>
+          <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-white/10 px-5 py-4">
+            <button
+              type="button"
+              onClick={() => setSelectedNotification(null)}
+              className="rounded-lg border border-white/10 px-4 py-2 text-sm text-zinc-300 hover:text-white"
+            >
+              Close
+            </button>
+            {notificationAction(selectedNotification) ? (
               <button
                 type="button"
-                onClick={() => setSelectedNotification(null)}
-                className="rounded-lg border border-white/10 p-2 text-zinc-400 hover:text-white"
-                aria-label="Close notification detail"
+                onClick={() => openNotificationAction(selectedNotification)}
+                className="inline-flex items-center gap-2 rounded-lg bg-orange-500 px-4 py-2 text-sm font-semibold text-black hover:bg-orange-400"
               >
-                <X size={16} />
+                {notificationAction(selectedNotification)?.label}
+                <ExternalLink size={15} />
               </button>
-            </div>
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
-              <p className="text-sm leading-6 text-zinc-200">{selectedNotification.message}</p>
-              <div className="grid gap-3 rounded-xl border border-white/10 bg-[#050505] p-3 text-xs text-zinc-400 sm:grid-cols-2">
-                <div>
-                  <div className="text-zinc-500">Created</div>
-                  <div className="mt-1 text-zinc-200">{formatTime(selectedNotification.createdAt)}</div>
-                </div>
-                <div>
-                  <div className="text-zinc-500">Status</div>
-                  <div className="mt-1 text-zinc-200">{selectedNotification.readBy?.includes(user?.uid || '') ? 'Read' : 'Unread'}</div>
-                </div>
-                <div>
-                  <div className="text-zinc-500">Type</div>
-                  <div className="mt-1 text-zinc-200">{selectedNotification.type || '-'}</div>
-                </div>
-                <div>
-                  <div className="text-zinc-500">Related ID</div>
-                  <div className="mt-1 break-all text-zinc-200">{selectedNotification.relatedEntityId || selectedNotification.metadata?.jobId || selectedNotification.metadata?.quotationId || selectedNotification.metadata?.invoiceId || selectedNotification.metadata?.customerId || '-'}</div>
-                </div>
-              </div>
-              {selectedNotification.metadata?.nextAction ? (
-                <div className="rounded-xl border border-orange-500/20 bg-orange-500/10 p-3 text-sm text-orange-100">
-                  Next: {selectedNotification.metadata.nextAction}
-                </div>
-              ) : null}
-            </div>
-            <div className="shrink-0 flex flex-wrap justify-end gap-2 border-t border-white/10 px-5 py-4">
+            ) : (
               <button
                 type="button"
-                onClick={() => setSelectedNotification(null)}
-                className="rounded-lg border border-white/10 px-4 py-2 text-sm text-zinc-300 hover:text-white"
+                disabled
+                className="rounded-lg border border-white/10 px-4 py-2 text-sm text-zinc-500"
               >
-                Close
+                No linked record available.
               </button>
-              {notificationAction(selectedNotification) ? (
-                <button
-                  type="button"
-                  onClick={() => openNotificationAction(selectedNotification)}
-                  className="inline-flex items-center gap-2 rounded-lg bg-orange-500 px-4 py-2 text-sm font-semibold text-black hover:bg-orange-400"
-                >
-                  {notificationAction(selectedNotification)?.label}
-                  <ExternalLink size={15} />
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  disabled
-                  className="rounded-lg border border-white/10 px-4 py-2 text-sm text-zinc-500"
-                >
-                  No linked record available.
-                </button>
-              )}
-            </div>
+            )}
           </div>
         </div>
-      ) : null}
+      </div>,
+      document.body,
+    )
+    : null;
+
+  return (
+    <div className="relative">
+      <button
+        ref={bellButtonRef}
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className="relative rounded-2xl border border-white/10 bg-[#151515] p-2.5 text-zinc-200 shadow-lg shadow-black/20 hover:border-orange-500/40 hover:text-orange-200"
+        aria-label="Approval notifications"
+      >
+        <Bell size={18} />
+        {unreadCount > 0 ? (
+          <span className="absolute -right-2 -top-2 flex h-[1.35rem] min-w-[1.35rem] items-center justify-center rounded-full border-2 border-[#050505] bg-red-500 px-1.5 text-center text-[11px] font-extrabold leading-none text-white shadow-[0_0_14px_rgba(239,68,68,0.7)]">
+            {unreadCount > 99 ? '99+' : unreadCount}
+          </span>
+        ) : null}
+      </button>
+      {notificationPanel}
+      {notificationDetailModal}
     </div>
   );
 }
