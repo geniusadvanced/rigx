@@ -18,6 +18,9 @@ export interface Customer {
   notes?: string;
   tags?: string[];
   lastJobId?: string;
+  lastJobNo?: string;
+  lastJobNumber?: string;
+  lastJobReference?: string;
   lastInvoiceId?: string;
   lastVisitAt?: Timestamp;
   totalJobs?: number;

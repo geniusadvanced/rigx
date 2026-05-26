@@ -8,6 +8,7 @@ import {
   type Customer360Data,
 } from '@/features/customers/services/customer360Service';
 import { softDeleteCustomer } from '@/features/customers/services/customerService';
+import { getReadableJobReference } from '@/features/jobs/utils/jobReference';
 import { useUser } from '@/lib/hooks/useUser';
 import { can } from '@/lib/rbac/can';
 
@@ -157,10 +158,10 @@ export default function Customer360Page() {
           <h2 className="text-lg font-semibold text-white">Job history</h2>
           <div className="mt-4 space-y-2">
             {data.jobs.map((job) => (
-              <div key={job.docId} className="rounded-2xl border border-white/10 bg-[#151515] p-3 text-sm">
-                <div className="font-medium text-white">{job.jobNo || job.jobNumber || job.jobSheetNo || job.agnJobNumber || job.docId}</div>
+              <Link key={job.docId} href={`/dashboard/jobs?jobId=${encodeURIComponent(job.docId)}`} className="block rounded-2xl border border-white/10 bg-[#151515] p-3 text-sm hover:border-orange-500/30">
+                <div className="font-medium text-white">{getReadableJobReference(job) || 'Pending ID'}</div>
                 <div className="mt-1 text-xs text-zinc-500">{job.status} · {job.deviceBrand || job.device} {job.deviceModel || ''}</div>
-              </div>
+              </Link>
             ))}
             {data.jobs.length === 0 ? <div className="text-sm text-zinc-500">No job history</div> : null}
           </div>

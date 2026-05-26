@@ -174,6 +174,33 @@ export async function getJobsByCustomer(customerId: string, role: Role): Promise
   }));
 }
 
+export async function getJobsByIds(jobIds: string[], user: UserData): Promise<Job[]> {
+  assertCan(user.role, 'customers.view');
+  const userBranch = normalizeUserBranch(user.branchId);
+  const uniqueJobIds = Array.from(new Set(jobIds.map((jobId) => normalizeText(jobId)).filter(Boolean)));
+  if (uniqueJobIds.length === 0) return [];
+
+  const jobs = await Promise.all(
+    uniqueJobIds.map(async (jobId) => {
+      try {
+        const snapshot = await getDoc(doc(db, 'jobs', jobId));
+        if (!snapshot.exists()) return null;
+        const job = {
+          docId: snapshot.id,
+          ...(snapshot.data() as Omit<Job, 'docId'>),
+        };
+        const branchId = String((job as Job & { branchId?: string }).branchId || '').trim().toLowerCase();
+        if ((user.role === 'manager' || user.role === 'technician') && userBranch && branchId !== userBranch) return null;
+        return job;
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  return jobs.filter((job): job is Job => Boolean(job));
+}
+
 export async function getJobsByDevice(deviceId: string, role: Role): Promise<Job[]> {
   assertCan(role, 'devices.view');
   const snapshot = await getDocs(query(collection(db, 'jobs'), where('deviceId', '==', deviceId)));
@@ -596,6 +623,9 @@ export async function updateCustomerMasterActivity(input: {
   branch?: CustomerBranch | string;
   source: CustomerSource;
   jobId?: string;
+  jobNo?: string;
+  jobNumber?: string;
+  jobReference?: string;
   invoiceId?: string;
   amountSpent?: number;
 }, user: UserData): Promise<void> {
@@ -616,6 +646,9 @@ export async function updateCustomerMasterActivity(input: {
     lastVisitAt: serverTimestamp(),
   };
   if (input.jobId) updates.lastJobId = input.jobId;
+  if (input.jobNo) updates.lastJobNo = normalizeText(input.jobNo);
+  if (input.jobNumber) updates.lastJobNumber = normalizeText(input.jobNumber);
+  if (input.jobReference) updates.lastJobReference = normalizeText(input.jobReference);
   if (input.invoiceId) updates.lastInvoiceId = input.invoiceId;
   if (input.source === 'job' && input.jobId) updates.totalJobs = increment(1);
   if (Number(input.amountSpent || 0) > 0) updates.totalSpent = increment(Number(input.amountSpent || 0));
@@ -644,6 +677,9 @@ export async function updateCustomerMasterActivity(input: {
     notes: '',
     tags: [],
     lastJobId: input.jobId || '',
+    lastJobNo: input.jobNo ? normalizeText(input.jobNo) : '',
+    lastJobNumber: input.jobNumber ? normalizeText(input.jobNumber) : '',
+    lastJobReference: input.jobReference ? normalizeText(input.jobReference) : '',
     lastInvoiceId: input.invoiceId || '',
     lastVisitAt: serverTimestamp(),
     totalJobs: 0,

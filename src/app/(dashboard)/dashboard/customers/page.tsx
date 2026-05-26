@@ -7,6 +7,7 @@ import {
   createDevice,
   getCustomers,
   getDevices,
+  getJobsByIds,
   getJobsByCustomer,
   importCustomerRows,
   normalizeCustomerPhone,
@@ -15,6 +16,7 @@ import {
   updateDevice,
 } from '@/features/customers/services/customerService';
 import type { Customer, CustomerBranch, CustomerFormInput, Device, DeviceFormInput } from '@/features/customers/types';
+import { findJobByReference, getReadableJobReference } from '@/features/jobs/utils/jobReference';
 import { useUser } from '@/lib/hooks/useUser';
 import { can } from '@/lib/rbac/can';
 import type { Job } from '@/types';
@@ -118,12 +120,17 @@ function rowValue(row: Record<string, string>, keys: string[]): string {
   return keys.map((key) => row[key]).find((value) => value !== undefined && value !== '') || '';
 }
 
+function getStoredReadableJobReference(customer?: Customer | null): string {
+  return customer?.lastJobNo || customer?.lastJobNumber || customer?.lastJobReference || '';
+}
+
 export default function CustomersPage() {
   const { profile, loading } = useUser();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [customerJobs, setCustomerJobs] = useState<Job[]>([]);
+  const [linkedJobsById, setLinkedJobsById] = useState<Record<string, Job>>({});
   const [customerForm, setCustomerForm] = useState<CustomerFormInput>(emptyCustomerForm);
   const [deviceForm, setDeviceForm] = useState<DeviceFormInput>(emptyDeviceForm);
   const [editingCustomerId, setEditingCustomerId] = useState('');
@@ -157,9 +164,11 @@ export default function CustomersPage() {
     try {
       if (process.env.NODE_ENV === 'development') console.time('loadCustomers');
       const [nextCustomers, nextDevices] = await Promise.all([getCustomers(profile), getDevices(profile.role)]);
+      const linkedJobs = await getJobsByIds(nextCustomers.map((customer) => customer.lastJobId || ''), profile);
       if (process.env.NODE_ENV === 'development') console.timeEnd('loadCustomers');
       setCustomers(nextCustomers);
       setDevices(nextDevices);
+      setLinkedJobsById(Object.fromEntries(linkedJobs.map((job) => [job.docId, job])));
       setSelectedCustomer((current) => {
         if (!current) return nextCustomers[0] || null;
         return nextCustomers.find((customer) => customer.customerId === current.customerId) || nextCustomers[0] || null;
@@ -198,6 +207,29 @@ export default function CustomersPage() {
     };
   }, [profile?.role, selectedCustomer]);
 
+  const selectedLatestJob = useMemo(() => {
+    return findJobByReference(customerJobs, selectedCustomer?.lastJobId) || linkedJobsById[selectedCustomer?.lastJobId || ''] || customerJobs[0];
+  }, [customerJobs, linkedJobsById, selectedCustomer?.lastJobId]);
+
+  const selectedLatestJobReference = useMemo(() => {
+    return getReadableJobReference(selectedLatestJob) || getStoredReadableJobReference(selectedCustomer) || '-';
+  }, [selectedCustomer, selectedLatestJob]);
+
+  const selectedCustomerJobReferences = useMemo(() => {
+    return customerJobs.map((job) => getReadableJobReference(job)).filter(Boolean).join(' ');
+  }, [customerJobs]);
+
+  function customerActivityLabel(customer: Customer): string {
+    if (customer.customerId === selectedCustomer?.customerId) {
+      const linkedJob = findJobByReference(customerJobs, customer.lastJobId) || linkedJobsById[customer.lastJobId || ''];
+      const readableReference = getReadableJobReference(linkedJob) || getStoredReadableJobReference(customer);
+      if (readableReference) return readableReference;
+    }
+
+    const linkedJob = linkedJobsById[customer.lastJobId || ''];
+    return getReadableJobReference(linkedJob) || getStoredReadableJobReference(customer) || customer.lastInvoiceId || 'No recent activity';
+  }
+
   const filteredCustomers = useMemo(() => {
     const normalized = search.trim().toLowerCase();
     const compact = normalized.replace(/[^a-z0-9]/g, '');
@@ -214,6 +246,9 @@ export default function CustomersPage() {
         customer.source,
         ...(customer.sources || []),
         customer.lastJobId,
+        getStoredReadableJobReference(customer),
+        getReadableJobReference(linkedJobsById[customer.lastJobId || '']),
+        customer.customerId === selectedCustomer?.customerId ? selectedCustomerJobReferences : '',
         customer.lastInvoiceId,
       ].map((value) => String(value || '').toLowerCase()).join(' ');
       const compactHaystack = haystack.replace(/[^a-z0-9]/g, '');
@@ -223,7 +258,7 @@ export default function CustomersPage() {
         (compact && compactHaystack.includes(compact))
       );
     });
-  }, [branchFilter, customers, search, sourceFilter]);
+  }, [branchFilter, customers, linkedJobsById, search, selectedCustomer?.customerId, selectedCustomerJobReferences, sourceFilter]);
 
   const sourceOptions = useMemo(() => {
     return Array.from(new Set(customers.flatMap((customer) => [customer.source, ...(customer.sources || [])]).filter(Boolean) as string[])).sort();
@@ -691,7 +726,7 @@ export default function CustomersPage() {
                   <div className="mt-1 truncate text-xs text-orange-200">{customer.customerNumber || 'Pending ID'}</div>
                   <div className="mt-1 truncate text-xs text-slate-400">{customer.phone || '-'}</div>
                   <div className="mt-1 text-xs capitalize text-orange-200">{customer.branch} · {customer.source || 'manual'}</div>
-                  <div className="mt-1 truncate text-xs text-slate-500">{customer.lastJobId || customer.lastInvoiceId || 'No recent activity'}</div>
+                  <div className="mt-1 truncate text-xs text-slate-500">{customerActivityLabel(customer)}</div>
                 </button>
                 <button
                   type="button"
@@ -714,7 +749,7 @@ export default function CustomersPage() {
                   <h2 className="text-xl font-semibold text-white">{selectedCustomer.fullName}</h2>
                   <div className="mt-1 text-sm font-medium text-orange-200">{selectedCustomer.customerNumber || 'Pending ID'}</div>
                   <div className="mt-1 text-sm text-slate-400">{selectedCustomer.phone} · {selectedCustomer.email || 'No email'}</div>
-                  <div className="mt-1 text-xs text-slate-500">Total jobs: {selectedCustomer.totalJobs ?? customerJobs.length} · Latest job: {selectedCustomer.lastJobId || (customerJobs[0] ? (customerJobs[0].jobNo || customerJobs[0].jobNumber || customerJobs[0].jobSheetNo || 'Pending ID') : '-')}</div>
+                  <div className="mt-1 text-xs text-slate-500">Total jobs: {selectedCustomer.totalJobs ?? customerJobs.length} · Latest job: {selectedLatestJobReference}</div>
                   <div className="mt-1 text-xs text-slate-500">Last invoice: {selectedCustomer.lastInvoiceId || '-'} · Last visit: {formatTimestamp(selectedCustomer.lastVisitAt)}</div>
                   <div className="mt-1 text-xs text-slate-500">Total spent: RM {Number(selectedCustomer.totalSpent || 0).toFixed(2)} · Source: {selectedCustomer.source || 'manual'}</div>
                   {selectedCustomer.notes ? <div className="mt-2 text-sm text-slate-400">{selectedCustomer.notes}</div> : null}
@@ -755,10 +790,10 @@ export default function CustomersPage() {
                   <h3 className="mb-3 font-medium text-white">Repair History</h3>
                   <div className="space-y-3">
                     {customerJobs.map((job) => (
-                      <div key={job.docId} className="rounded-md border border-white/10 bg-[#050505] p-3">
-                        <div className="font-medium text-slate-100">{job.jobNo || job.jobNumber || job.jobSheetNo || job.agnJobNumber}</div>
+                      <Link key={job.docId} href={`/dashboard/jobs?jobId=${encodeURIComponent(job.docId)}`} className="block rounded-md border border-white/10 bg-[#050505] p-3 hover:border-orange-500/30">
+                        <div className="font-medium text-slate-100">{getReadableJobReference(job) || 'Pending ID'}</div>
                         <div className="mt-1 text-xs text-slate-500">{job.deviceModel || job.device} · {job.status}</div>
-                      </div>
+                      </Link>
                     ))}
                     {customerJobs.length === 0 ? <div className="rounded-md border border-white/10 bg-[#050505] p-4 text-sm text-slate-500">No linked jobs yet</div> : null}
                   </div>

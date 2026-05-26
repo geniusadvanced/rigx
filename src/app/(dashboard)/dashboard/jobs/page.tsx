@@ -1926,6 +1926,9 @@ export default function JobsPage() {
           branch: branchId,
           source: 'job',
           jobId: createdJob.docId,
+          jobNo: createdJob.jobNo,
+          jobNumber: createdJob.jobNumber,
+          jobReference: createdJob.jobNo || createdJob.jobNumber || createdJob.jobSheetNo || createdJob.agnJobNumber || createdJob.docId,
         }, profile).catch(() => undefined);
         warnTechnicianAddJobDebug({
           checkpoint: 'addJob:jobCreate:success',
