@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react';
 import { Timestamp } from 'firebase/firestore';
+import { getJobForUserByIdentifier } from '@/lib/firebase/firestore';
 import {
   approveCommissionForJob,
   buildJobFinancialPreview,
@@ -261,6 +262,33 @@ const lifecycleStatusLabels: Record<JobStatus, string> = {
 
 function lifecycleLabelForJob(job: Job): string {
   return repairLifecycleLabels[getCurrentRepairLifecycleStatus(job)] || lifecycleStatusLabels[normalizeJobStatus(job.status)];
+}
+
+function normalizeJobReference(value: unknown): string {
+  return String(value || '').trim();
+}
+
+function jobMatchesReference(job: Job, reference: string): boolean {
+  const normalizedReference = normalizeJobReference(reference);
+  if (!normalizedReference) return false;
+
+  const readableJob = job as Job & {
+    id?: unknown;
+    jobId?: unknown;
+    repairId?: unknown;
+  };
+
+  return [
+    job.docId,
+    readableJob.id,
+    readableJob.jobId,
+    job.jobNo,
+    job.jobNumber,
+    job.jobSheetNo,
+    job.agnJobNumber,
+    readableJob.repairId,
+    getDisplayJobNumber(job),
+  ].some((value) => normalizeJobReference(value) === normalizedReference);
 }
 
 function jobDeviceInfo(job: Job): string {
@@ -655,6 +683,7 @@ export default function JobsPage() {
   const { jobs, loading, error, refetch } = useJobs(profile?.role ? profile : null);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [handledQueryJobId, setHandledQueryJobId] = useState('');
+  const [queryJobLookupLoading, setQueryJobLookupLoading] = useState(false);
   const [documents, setDocuments] = useState<JobDocument[]>([]);
   const [extractions, setExtractions] = useState<Record<string, JobDocumentExtraction>>({});
   const [extractionEdits, setExtractionEdits] = useState<Record<string, JobDocumentExtractedData>>({});
@@ -1080,27 +1109,65 @@ export default function JobsPage() {
   }, [allPartsOrders, branchFilter, jobSearch, jobs, overdueOnly, slaFilter, statusFilter, technicianFilter]);
 
   useEffect(() => {
-    if (typeof window === 'undefined' || loading || error) return;
-    const queryJobId = new URLSearchParams(window.location.search).get('jobId')?.trim() || '';
+    let cancelled = false;
+    if (typeof window === 'undefined') return;
+    const searchParams = new URLSearchParams(window.location.search);
+    const queryJobId = (
+      searchParams.get('jobId')?.trim()
+      || searchParams.get('jobNo')?.trim()
+      || ''
+    );
     if (!queryJobId || handledQueryJobId === queryJobId) return;
-    const match = jobs.find((job) => (
-      job.docId === queryJobId
-      || job.jobNo === queryJobId
-      || job.jobNumber === queryJobId
-      || job.jobSheetNo === queryJobId
-      || job.agnJobNumber === queryJobId
-    ));
-    setHandledQueryJobId(queryJobId);
-    if (match) {
-      setSelectedJob(match);
+    if (!profile?.role || loading) {
       setMessage('');
-      requestAnimationFrame(() => {
-        document.getElementById('job-detail-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      });
       return;
     }
-    setMessage('Job not found or you do not have permission to view this job.');
-  }, [error, handledQueryJobId, jobs, loading]);
+    const currentProfile = profile;
+
+    async function openQueryJob() {
+      setQueryJobLookupLoading(true);
+      setMessage('');
+
+      try {
+        const match = jobs.find((job) => jobMatchesReference(job, queryJobId))
+          || await getJobForUserByIdentifier(currentProfile, queryJobId);
+
+        if (cancelled) return;
+        setHandledQueryJobId(queryJobId);
+
+        if (match) {
+          setSelectedJob(match);
+          setMessage('');
+          requestAnimationFrame(() => {
+            document.getElementById('job-detail-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          });
+          return;
+        }
+
+        setMessage('Job not found or you do not have permission to view this job.');
+      } catch (lookupError) {
+        if (cancelled) return;
+        warnJobPagePermissionSourceIfNeeded(lookupError, {
+          sourceFunction: 'getJobForUserByIdentifier',
+          operationName: 'openJobFromQueryParam',
+          firestorePath: `jobs lookup for ${queryJobId}`,
+          profileUid: currentProfile.uid,
+          profileRole: currentProfile.role,
+          profileBranchId: currentProfile.branchId,
+        });
+        setHandledQueryJobId(queryJobId);
+        setMessage('Job not found or you do not have permission to view this job.');
+      } finally {
+        if (!cancelled) setQueryJobLookupLoading(false);
+      }
+    }
+
+    void openQueryJob();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [handledQueryJobId, jobs, loading, profile]);
 
   useEffect(() => {
     let cancelled = false;
@@ -4099,7 +4166,11 @@ export default function JobsPage() {
         </div>
       </div>
 
-      {message ? (
+      {queryJobLookupLoading ? (
+        <div className="mb-4 rounded-md border border-white/10 bg-[#151515] px-3 py-2 text-sm text-slate-200">
+          Opening job...
+        </div>
+      ) : message ? (
         <div className="mb-4 rounded-md border border-white/10 bg-[#151515] px-3 py-2 text-sm text-slate-200">
           {message}
         </div>

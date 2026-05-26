@@ -3,6 +3,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
   query,
   where,
 } from 'firebase/firestore';
@@ -95,6 +96,79 @@ export async function getJobsForUser(user: UserData): Promise<Job[]> {
     docId: jobDoc.id,
     ...(jobDoc.data() as Omit<Job, 'docId'>),
   }));
+}
+
+const readableJobReferenceFields = [
+  'id',
+  'jobId',
+  'jobNo',
+  'jobNumber',
+  'jobSheetNo',
+  'agnJobNumber',
+  'repairId',
+] as const;
+
+function canReadJob(user: UserData, job: Job): boolean {
+  if (user.role === 'technician') return job.technicianId === user.uid;
+  return true;
+}
+
+async function getJobByDocId(user: UserData, jobId: string): Promise<Job | null> {
+  if (jobId.includes('/')) return null;
+
+  const snapshot = await getDoc(doc(db, rootCollections.jobs, jobId));
+  if (!snapshot.exists()) return null;
+
+  const job = {
+    docId: snapshot.id,
+    ...(snapshot.data() as Omit<Job, 'docId'>),
+  };
+  return canReadJob(user, job) ? job : null;
+}
+
+async function getJobIdFromRegistry(jobNo: string): Promise<string | null> {
+  if (jobNo.includes('/')) return null;
+
+  const snapshot = await getDoc(doc(db, 'jobNumberRegistry', jobNo));
+  if (!snapshot.exists()) return null;
+
+  const data = snapshot.data() as { jobId?: unknown; docId?: unknown };
+  return String(data.jobId || data.docId || '').trim() || null;
+}
+
+export async function getJobForUserByIdentifier(user: UserData, identifier: string): Promise<Job | null> {
+  if (user.role === 'technician') {
+    assertCan(user.role, 'jobs.view.assigned');
+  } else {
+    assertCan(user.role, 'jobs.view.all');
+  }
+
+  const normalizedIdentifier = identifier.trim();
+  if (!normalizedIdentifier) return null;
+
+  const directJob = await getJobByDocId(user, normalizedIdentifier);
+  if (directJob) return directJob;
+
+  const registryJobId = await getJobIdFromRegistry(normalizedIdentifier).catch(() => null);
+  if (registryJobId && registryJobId !== normalizedIdentifier) {
+    const registryJob = await getJobByDocId(user, registryJobId);
+    if (registryJob) return registryJob;
+  }
+
+  const jobsRef = collection(db, rootCollections.jobs);
+  for (const field of readableJobReferenceFields) {
+    const snapshot = await getDocs(query(jobsRef, where(field, '==', normalizedIdentifier), limit(1)));
+    const jobDoc = snapshot.docs[0];
+    if (!jobDoc) continue;
+
+    const job = {
+      docId: jobDoc.id,
+      ...(jobDoc.data() as Omit<Job, 'docId'>),
+    };
+    if (canReadJob(user, job)) return job;
+  }
+
+  return null;
 }
 
 export { db };

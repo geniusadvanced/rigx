@@ -4,10 +4,9 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import * as QRCode from 'qrcode';
-import { doc, getDoc } from 'firebase/firestore';
 import { getGeniusBranchDetails } from '@/components/documents/documentConfig';
 import { formatDocumentDate } from '@/components/documents/documentUtils';
-import { db } from '@/lib/firebase/init';
+import { getJobForUserByIdentifier } from '@/lib/firebase/firestore';
 import { useUser } from '@/lib/hooks/useUser';
 import type { Job } from '@/types';
 
@@ -31,23 +30,31 @@ export default function JobLabelPrintPage() {
   const params = useParams<{ jobId: string }>();
   const { profile, loading } = useUser();
   const [job, setJob] = useState<Job | null>(null);
+  const [jobLoading, setJobLoading] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [message, setMessage] = useState('');
 
   useEffect(() => {
     let cancelled = false;
     if (!profile || !params.jobId) return;
-    getDoc(doc(db, 'jobs', params.jobId))
-      .then((snapshot) => {
+
+    setJobLoading(true);
+    setJob(null);
+    setMessage('');
+    getJobForUserByIdentifier(profile, params.jobId)
+      .then((nextJob) => {
         if (cancelled) return;
-        if (!snapshot.exists()) {
+        if (!nextJob) {
           setMessage('Job not found or you do not have permission to view this job.');
           return;
         }
-        setJob({ docId: snapshot.id, ...snapshot.data() } as Job);
+        setJob(nextJob);
       })
       .catch(() => {
         if (!cancelled) setMessage('Job not found or you do not have permission to view this job.');
+      })
+      .finally(() => {
+        if (!cancelled) setJobLoading(false);
       });
     return () => {
       cancelled = true;
@@ -79,7 +86,7 @@ export default function JobLabelPrintPage() {
     };
   }, [qrUrl]);
 
-  if (loading || !profile) return <div className="p-6 text-sm text-zinc-400">Loading job label</div>;
+  if (loading || !profile || jobLoading) return <div className="p-6 text-sm text-zinc-400">Loading job label</div>;
   if (!job) return <div className="rounded-lg border border-white/10 bg-[#151515] p-6 text-sm text-zinc-300">{message || 'Loading job label'}</div>;
 
   const branch = getGeniusBranchDetails(job.branchId || profile.branchId || '');
