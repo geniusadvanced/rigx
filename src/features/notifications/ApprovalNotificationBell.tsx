@@ -242,22 +242,33 @@ export function ApprovalNotificationBell({ user }: { user: UserData | null }) {
         ) : null}
       </button>
       {open ? (
-        <div className="absolute right-0 z-50 mt-2 flex max-h-[420px] w-[420px] max-w-[calc(100vw-24px)] flex-col overflow-hidden rounded-2xl border border-orange-500/20 bg-[#050505] shadow-2xl shadow-black/80 ring-1 ring-orange-500/10">
+        <div className="fixed inset-x-3 bottom-3 z-[80] flex max-h-[80vh] w-auto max-w-none flex-col overflow-hidden rounded-2xl border border-orange-500/20 bg-[#050505] shadow-2xl shadow-black/80 ring-1 ring-orange-500/10 md:absolute md:inset-x-auto md:bottom-auto md:right-0 md:z-50 md:mt-2 md:max-h-[420px] md:w-[420px] md:max-w-[calc(100vw-24px)]">
           <div className="shrink-0 border-b border-white/10 bg-[#080808] px-4 py-3">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold text-white">Approval Notifications</div>
                 <div className="text-xs text-zinc-400">{unreadCount} unread</div>
               </div>
-              <button
-                type="button"
-                disabled={unreadCount === 0}
-                onClick={markAllRead}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-2.5 py-1.5 text-xs font-medium text-zinc-300 hover:border-orange-500/30 hover:text-orange-200 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <CheckCheck size={14} />
-                Mark all read
-              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  disabled={unreadCount === 0}
+                  onClick={markAllRead}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-2.5 py-1.5 text-xs font-medium text-zinc-300 hover:border-orange-500/30 hover:text-orange-200 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <CheckCheck size={14} />
+                  <span className="hidden min-[380px]:inline">Mark all read</span>
+                  <span className="min-[380px]:hidden">Read</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="rounded-lg border border-white/10 p-1.5 text-zinc-400 hover:border-orange-500/30 hover:text-white"
+                  aria-label="Close notifications"
+                >
+                  <X size={15} />
+                </button>
+              </div>
             </div>
             <div className="mt-3 flex rounded-lg border border-white/10 bg-[#050505] p-1">
               {(['all', 'unread'] as const).map((value) => (
@@ -335,8 +346,8 @@ export function ApprovalNotificationBell({ user }: { user: UserData | null }) {
         </div>
       ) : null}
       {selectedNotification ? (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4">
-          <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-[#101010] shadow-2xl shadow-black/80">
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/70 p-3 sm:p-4">
+          <div className="flex max-h-[calc(100vh-24px)] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#101010] shadow-2xl shadow-black/80 sm:max-h-[calc(100vh-32px)]">
             <div className="flex items-start justify-between gap-3 border-b border-white/10 px-5 py-4">
               <div>
                 <div className="text-xs uppercase tracking-wide text-orange-200">{moduleLabel(selectedNotification)}</div>
@@ -351,7 +362,7 @@ export function ApprovalNotificationBell({ user }: { user: UserData | null }) {
                 <X size={16} />
               </button>
             </div>
-            <div className="space-y-4 px-5 py-4">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
               <p className="text-sm leading-6 text-zinc-200">{selectedNotification.message}</p>
               <div className="grid gap-3 rounded-xl border border-white/10 bg-[#050505] p-3 text-xs text-zinc-400 sm:grid-cols-2">
                 <div>
@@ -377,7 +388,7 @@ export function ApprovalNotificationBell({ user }: { user: UserData | null }) {
                 </div>
               ) : null}
             </div>
-            <div className="flex flex-wrap justify-end gap-2 border-t border-white/10 px-5 py-4">
+            <div className="shrink-0 flex flex-wrap justify-end gap-2 border-t border-white/10 px-5 py-4">
               <button
                 type="button"
                 onClick={() => setSelectedNotification(null)}
