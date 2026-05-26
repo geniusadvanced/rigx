@@ -43,6 +43,7 @@ export interface SignedWarrantySnapshot {
   sourceType: 'job_warranty' | 'pos_warranty';
   warrantyId: string;
   warrantyNumber: string;
+  warrantyDisplayReference?: string;
   signedAt: string;
   signerName: string;
   signerPhone: string;
@@ -72,10 +73,15 @@ export interface SignedWarrantySnapshot {
   customerPhone: string;
   jobId?: string;
   jobNumber?: string;
+  deviceSerialOrImei?: string;
   invoiceId?: string;
   invoiceNo?: string;
   deviceName: string;
   branchId: string;
+  branchName?: string;
+  branchAddress?: string;
+  branchPhone?: string;
+  branchWhatsapp?: string;
   claimLimit: string;
 }
 

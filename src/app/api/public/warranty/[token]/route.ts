@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getGeniusBranchDetails } from '@/components/documents/documentConfig';
 import { createApprovalNotification } from '@/features/notifications/serverNotificationService';
 import { defaultWarrantyTermsSnapshot, type WarrantyTermsSnapshot } from '@/features/pos/warrantyTerms';
 import { adminDb, FieldValue } from '@/lib/firebase/admin';
@@ -65,6 +66,18 @@ function deviceDisplay(data: FirebaseFirestore.DocumentData, job: FirebaseFirest
   ].map((value) => String(value || '').trim()).find(Boolean) || 'Device';
 }
 
+function serialOrImeiDisplay(data: FirebaseFirestore.DocumentData, job: FirebaseFirestore.DocumentData | null, invoice?: FirebaseFirestore.DocumentData | null): string {
+  return [
+    job?.serialNumber,
+    job?.imei,
+    invoice?.serialNumber,
+    invoice?.imei,
+    data.serialNumber,
+    data.imei,
+    data.deviceSerialOrImei,
+  ].map((value) => String(value || '').trim()).find(Boolean) || '';
+}
+
 function termsSnapshot(data: FirebaseFirestore.DocumentData): WarrantyTermsSnapshot {
   const snapshot = data.warrantyTermsSnapshot as WarrantyTermsSnapshot | undefined;
   return snapshot?.version ? snapshot : defaultWarrantyTermsSnapshot;
@@ -92,15 +105,23 @@ function safeWarranty(
   invoice: FirebaseFirestore.DocumentData | null,
 ) {
   const signed = Boolean(data.warrantySignedAt || data.warrantyTermsAccepted || data.acceptedTerms);
+  const branchId = String(data.branchId || job?.branchId || invoice?.branchId || '').trim();
+  const branch = getGeniusBranchDetails(branchId);
+  const warrantyNumber = `WTY-${warrantyId.slice(0, 8).toUpperCase()}`;
   return {
     warrantyId,
-    warrantyNumber: `WTY-${warrantyId.slice(0, 8).toUpperCase()}`,
+    warrantyNumber,
+    warrantyDisplayReference: warrantyNumber,
     jobNumber: displayJobNumber(data, job),
     invoiceNo: invoice?.invoiceNo || data.invoiceId || '',
     customerName: data.customerName || '',
     customerPhone: data.customerPhone || '',
-    branchId: data.branchId || '',
+    branchId,
+    branchName: branch.branchName,
+    branchAddress: branch.address,
+    branchPhone: branch.whatsapp,
     deviceName: deviceDisplay(data, job, invoice),
+    deviceSerialOrImei: serialOrImeiDisplay(data, job, invoice),
     coveredItem: data.itemName || '',
     warrantyDurationDays: Number(data.warrantyDurationDays || 0),
     startDate: serializeTimestamp(data.startDate),
@@ -128,6 +149,9 @@ function safeJobWarranty(
   const signed = Boolean(data.warrantySignedAt || data.acceptedTerms);
   const terms = jobWarrantyTermsSnapshot(data);
   const branchId = String(job?.branchId || data.branchId || 'cyberjaya');
+  const branch = getGeniusBranchDetails(branchId);
+  const jobNumber = displayJobNumber(data, job);
+  const warrantyNumber = data.warrantyNumber || data.warrantyCode || (jobNumber && jobNumber !== '-' ? `JW-${jobNumber}` : `JW-${warrantyId.slice(0, 8).toUpperCase()}`);
   const deviceName = [
     [job?.deviceBrand, job?.deviceModel].map((value) => String(value || '').trim()).filter(Boolean).join(' '),
     String(job?.device || '').trim(),
@@ -135,13 +159,18 @@ function safeJobWarranty(
   ].find(Boolean) || 'Device';
   return {
     warrantyId,
-    warrantyNumber: `JW-${warrantyId.slice(0, 8).toUpperCase()}`,
-    jobNumber: displayJobNumber(data, job),
+    warrantyNumber,
+    warrantyDisplayReference: data.warrantyNumber || data.warrantyCode || (jobNumber && jobNumber !== '-' ? `JW-${jobNumber}` : ''),
+    jobNumber,
     invoiceNo: '',
     customerName: job?.customerName || data.customerName || '',
     customerPhone: job?.customerPhone || data.customerPhone || '',
     branchId,
+    branchName: branch.branchName,
+    branchAddress: branch.address,
+    branchPhone: branch.whatsapp,
     deviceName,
+    deviceSerialOrImei: serialOrImeiDisplay(data, job),
     coveredItem: data.title || 'Repair Warranty',
     warrantyDurationDays: Number(data.warrantyPeriodDays || 0),
     startDate: serializeTimestamp(data.warrantyStartDate),
@@ -179,6 +208,7 @@ function signedSnapshotFromWarranty(input: {
     sourceType: input.sourceType,
     warrantyId: input.warrantyId,
     warrantyNumber: input.warranty.warrantyNumber,
+    warrantyDisplayReference: input.warranty.warrantyDisplayReference || input.warranty.warrantyNumber,
     signedAt: input.signedAt,
     signerName: input.signerName,
     signerPhone: input.signerPhone,
@@ -203,7 +233,12 @@ function signedSnapshotFromWarranty(input: {
     invoiceId: String(input.data.invoiceId || ''),
     invoiceNo: input.warranty.invoiceNo,
     deviceName: input.warranty.deviceName,
+    deviceSerialOrImei: input.warranty.deviceSerialOrImei || '',
     branchId: input.warranty.branchId,
+    branchName: input.warranty.branchName || '',
+    branchAddress: input.warranty.branchAddress || '',
+    branchPhone: input.warranty.branchPhone || '',
+    branchWhatsapp: input.warranty.branchPhone || '',
     claimLimit: input.warranty.claimLimit,
   };
 }
