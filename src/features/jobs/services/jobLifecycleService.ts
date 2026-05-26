@@ -1,4 +1,4 @@
-import { arrayUnion, doc, serverTimestamp, Timestamp, updateDoc } from 'firebase/firestore';
+import { arrayUnion, collection, doc, getDocs, query, serverTimestamp, Timestamp, updateDoc, where } from 'firebase/firestore';
 import { writeAuditLog } from '@/features/audit/services/auditLogService';
 import { getAfterRepairChecklistByJob } from '@/features/device-checklists/deviceChecklistService';
 import { db } from '@/lib/firebase/init';
@@ -209,6 +209,24 @@ function getLifecycleLogJobNumber(job: Job): string {
   return job.jobNo || job.jobNumber || job.jobSheetNo || job.agnJobNumber || job.docId || '';
 }
 
+function isValidQuotationData(data: Record<string, unknown>): boolean {
+  const status = String(data.quotationApprovalStatus || data.status || '').toLowerCase();
+  if (['void', 'cancelled', 'expired', 'rejected'].includes(status)) return false;
+  const items = Array.isArray(data.items) ? data.items : [];
+  const hasItem = items.some((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const row = item as Record<string, unknown>;
+    return Boolean(String(row.name || '').trim()) && Number(row.quantity || 0) > 0;
+  });
+  return hasItem || Number(data.total || 0) > 0;
+}
+
+export async function hasValidQuotationForJob(jobId: string): Promise<boolean> {
+  if (!jobId) return false;
+  const snapshot = await getDocs(query(collection(db, 'quotations'), where('jobId', '==', jobId)));
+  return snapshot.docs.some((quotationDoc) => isValidQuotationData(quotationDoc.data()));
+}
+
 function lifecycleCheckpoint(
   checkpoint: string,
   params: {
@@ -264,6 +282,9 @@ export async function updateJobLifecycleStatus(params: {
   if (params.nextStatus === 'warranty_active' && !['delivered', 'repair_completed'].includes(currentStatus) && !overrideUsed) {
     throw new Error('Cannot activate warranty before delivery or completion');
   }
+  if (params.nextStatus === 'quotation_sent' && !await hasValidQuotationForJob(params.job.docId)) {
+    throw new Error('Please create a quotation before sending quotation.');
+  }
   if (isCustomerReleaseStatus(params.nextStatus)) {
     const afterRepairChecklist = await getAfterRepairChecklistByJob({
       jobId: params.job.docId,
@@ -310,6 +331,9 @@ export async function updateJobLifecycleStatus(params: {
   if (params.nextStatus === 'customer_rejected') {
     updates.customerApprovalStatus = 'rejected';
     updates.quotationStatus = 'rejected';
+  }
+  if (params.nextStatus === 'diagnosis' || params.nextStatus === 'quotation_pending') {
+    updates.quotationStatus = 'draft';
   }
   if (params.nextStatus === 'quotation_sent') {
     updates.quotationStatus = 'sent';

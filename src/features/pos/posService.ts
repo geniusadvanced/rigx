@@ -164,6 +164,7 @@ export interface JobQuotationActionSummary {
   status: QuotationStatus;
   quotationApprovalStatus?: QuotationStatus;
   total: number;
+  hasLineItems?: boolean;
   publicToken?: string;
   quotationApprovalToken?: string;
   deviceInfo?: string;
@@ -250,6 +251,11 @@ async function requireLinkedJobLifecycle(
   const lifecycleStatus = getCurrentRepairLifecycleStatus(job);
   if (!allowedStatuses.includes(lifecycleStatus)) throw new Error(blockedMessage);
   return job;
+}
+
+function isValidQuotationRecord(quotation: PosQuotation): boolean {
+  if (['void', 'cancelled', 'expired', 'rejected'].includes(String(quotation.quotationApprovalStatus || quotation.status || '').toLowerCase())) return false;
+  return Number(quotation.total || 0) > 0 || quotation.items.some((item) => String(item.name || '').trim() && Number(item.quantity || 0) > 0);
 }
 
 async function moveLinkedJobLifecycle(
@@ -340,6 +346,7 @@ function mapJobQuotationAction(quotation: PosQuotation): JobQuotationActionSumma
     status: quotation.status,
     quotationApprovalStatus: quotation.quotationApprovalStatus,
     total: quotation.total,
+    hasLineItems: quotation.items?.some((item) => String(item.name || '').trim() && Number(item.quantity || 0) > 0) || false,
     publicToken: quotation.publicToken,
     quotationApprovalToken: quotation.quotationApprovalToken,
     deviceInfo: [firstItem?.name, quotation.items?.length > 1 ? `and ${quotation.items.length - 1} more item(s)` : ''].filter(Boolean).join(' ') || 'Service',
@@ -1178,9 +1185,18 @@ export async function createQuotation(input: PosDocumentInput, user: UserData): 
   assertCan(user.role, 'pos.operate');
   const linkedJob = await requireLinkedJobLifecycle(
     input.jobId,
-    ['diagnosis', 'quotation_pending', 'customer_rejected'],
+    ['diagnosis', 'quotation_pending', 'customer_rejected', 'quotation_sent'],
     'Quotation can only be created while diagnosis or quotation revision is in progress',
   );
+  if (input.jobId) {
+    const existingSnapshot = await getDocs(query(collection(db, 'quotations'), where('jobId', '==', input.jobId)));
+    const activeQuotation = existingSnapshot.docs
+      .map((quoteDoc) => mapQuotation(quoteDoc.id, quoteDoc.data()))
+      .find((quotation) => ['draft', 'pending', 'sent', 'approved'].includes(String(quotation.quotationApprovalStatus || quotation.status || '')) && isValidQuotationRecord(quotation));
+    if (activeQuotation) {
+      throw new Error(`Active quotation already exists for this job: ${activeQuotation.quotationNo || activeQuotation.quotationId}`);
+    }
+  }
   const items = normalizeItems(input.items);
   const totals = calculateTotals(items, input.discountAmount);
   const quotationNumber = await generateQuotationNumber();
@@ -1251,7 +1267,7 @@ export async function createQuotationFromJob(
   const existingSnapshot = await getDocs(query(collection(db, 'quotations'), where('jobId', '==', job.docId)));
   const existingQuotations = existingSnapshot.docs.map((quoteDoc) => mapQuotation(quoteDoc.id, quoteDoc.data()));
   const activeQuotation = existingQuotations.find((quotation) => (
-    ['draft', 'pending', 'sent', 'approved'].includes(String(quotation.quotationApprovalStatus || quotation.status || ''))
+    ['draft', 'pending', 'sent', 'approved'].includes(String(quotation.quotationApprovalStatus || quotation.status || '')) && isValidQuotationRecord(quotation)
   ));
   if (activeQuotation) {
     throw new Error(`Active quotation already exists for this job: ${activeQuotation.quotationNo || activeQuotation.quotationId}`);

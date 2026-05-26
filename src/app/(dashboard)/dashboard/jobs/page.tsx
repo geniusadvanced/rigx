@@ -601,6 +601,14 @@ function deviceChecklistSignatureSatisfied(checklist?: DeviceChecklist | null): 
     || Boolean(checklist?.customerSignedAt || checklist?.overrideAt);
 }
 
+function validJobQuotationExists(quotations: JobQuotationActionSummary[]): boolean {
+  return quotations.some((quotation) => {
+    const status = String(quotation.quotationApprovalStatus || quotation.status || '').toLowerCase();
+    if (['void', 'cancelled', 'expired', 'rejected'].includes(status)) return false;
+    return Boolean(quotation.hasLineItems) || Number(quotation.total || 0) > 0;
+  });
+}
+
 function isCustomerReleaseStatus(status: RepairLifecycleStatus): boolean {
   return ['ready_for_pickup', 'delivered', 'warranty_active', 'warranty_expired'].includes(status);
 }
@@ -914,6 +922,15 @@ export default function JobsPage() {
     if (!profile || !selectedJob) return [];
     return getAllowedRepairLifecycleTransitions(selectedJob, profile);
   }, [profile, selectedJob]);
+  const selectedJobHasValidQuotation = useMemo(
+    () => validJobQuotationExists(jobQuotationActions),
+    [jobQuotationActions],
+  );
+  const selectedJobStuckWithoutQuotation = Boolean(
+    selectedJob
+      && getCurrentRepairLifecycleStatus(selectedJob) === 'quotation_sent'
+      && !selectedJobHasValidQuotation,
+  );
   const canChangeSelectedJobStatus = allowedNextStatuses.length > 0;
   const selectedJobSla = useMemo(
     () => (selectedJob ? calculateJobSla(selectedJob, partsOrders) : null),
@@ -922,6 +939,7 @@ export default function JobsPage() {
   const activeJobQuotation = useMemo(() => {
     return jobQuotationActions.find((quotation) => (
       ['draft', 'pending', 'sent', 'approved'].includes(String(quotation.quotationApprovalStatus || quotation.status || ''))
+      && (Boolean(quotation.hasLineItems) || Number(quotation.total || 0) > 0)
     )) || null;
   }, [jobQuotationActions]);
   const approvedJobQuotationForInvoice = useMemo(() => (
@@ -1957,6 +1975,11 @@ export default function JobsPage() {
       setMessage('Please complete After Repair Checklist before handing over the device to customer.');
       return;
     }
+    if (nextStatus === 'quotation_sent' && !selectedJobHasValidQuotation) {
+      setShowJobQuotationModal(true);
+      setMessage('Please create a quotation before sending quotation.');
+      return;
+    }
 
     setActionLoading(true);
     setMessage('');
@@ -2135,6 +2158,48 @@ export default function JobsPage() {
         profileRole: profile.role,
       }, null, 2));
       setMessage(statusError instanceof Error ? statusError.message : 'Unable to update job status');
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function handleRevertQuotationSentToDiagnosis() {
+    if (!profile || !selectedJob || !canManageReviews) return;
+    if (!selectedJobStuckWithoutQuotation) {
+      setMessage('A valid quotation exists for this job. Revert is not available.');
+      return;
+    }
+
+    const confirmed = window.confirm('Revert this job back to Diagnosis so quotation can be created?');
+    if (!confirmed) return;
+
+    const reason = window.prompt('Reason for reverting to Diagnosis')?.trim() || '';
+    if (!reason) {
+      setMessage('Reason is required to revert quotation status.');
+      return;
+    }
+
+    setActionLoading(true);
+    setMessage('');
+
+    try {
+      await updateJobLifecycleStatus({
+        job: selectedJob,
+        user: profile,
+        nextStatus: 'diagnosis',
+        note: reason,
+        overrideReason: reason,
+      });
+      setSelectedJob({
+        ...selectedJob,
+        lifecycleStatus: 'diagnosis',
+        status: 'diagnosis',
+        quotationStatus: selectedJob.quotationStatus === 'sent' ? 'draft' : selectedJob.quotationStatus,
+      });
+      setMessage('Job reverted to diagnosis. You can create a quotation now.');
+      await refetch();
+    } catch (revertError) {
+      setMessage(revertError instanceof Error ? revertError.message : 'Unable to revert job to diagnosis');
     } finally {
       setActionLoading(false);
     }
@@ -5420,19 +5485,43 @@ export default function JobsPage() {
                     className="w-full rounded-md border border-white/10 bg-[#151515] px-3 py-2 text-sm text-white outline-none focus:border-orange-500/35"
                   />
                   <div className="mt-2 flex flex-wrap gap-2">
-                    {allowedNextStatuses.map((nextStatus) => (
-                      <button
-                        key={nextStatus}
-                        type="button"
-                        onClick={() => handleStatusChange(nextStatus)}
-                        disabled={actionLoading || (isCustomerReleaseStatus(nextStatus) && !afterRepairChecklistCompleted(afterRepairChecklist))}
-                        title={isCustomerReleaseStatus(nextStatus) && !afterRepairChecklistCompleted(afterRepairChecklist) ? 'Please complete After Repair Checklist before handing over the device to customer.' : undefined}
-                        className="rounded-md border border-orange-500/30 px-3 py-2 text-xs font-medium text-orange-200 hover:bg-[#F97316]/10 disabled:opacity-60"
-                      >
-                        {nextStatus === 'ready_for_pickup' ? 'Ready for Pickup + WhatsApp' : repairLifecycleActionLabels[nextStatus]}
-                      </button>
-                    ))}
+                    {allowedNextStatuses.map((nextStatus) => {
+                      const quotationSendBlocked = nextStatus === 'quotation_sent' && !selectedJobHasValidQuotation;
+                      const releaseBlocked = isCustomerReleaseStatus(nextStatus) && !afterRepairChecklistCompleted(afterRepairChecklist);
+                      return (
+                        <button
+                          key={nextStatus}
+                          type="button"
+                          onClick={() => {
+                            if (quotationSendBlocked) {
+                              setShowJobQuotationModal(true);
+                              setMessage('Please create a quotation before sending quotation.');
+                              return;
+                            }
+                            handleStatusChange(nextStatus);
+                          }}
+                          disabled={actionLoading || releaseBlocked}
+                          title={
+                            quotationSendBlocked
+                              ? 'Please create a quotation before sending quotation.'
+                              : releaseBlocked
+                                ? 'Please complete After Repair Checklist before handing over the device to customer.'
+                                : undefined
+                          }
+                          className="rounded-md border border-orange-500/30 px-3 py-2 text-xs font-medium text-orange-200 hover:bg-[#F97316]/10 disabled:opacity-60"
+                        >
+                          {quotationSendBlocked
+                            ? 'Create Quotation'
+                            : nextStatus === 'ready_for_pickup'
+                              ? 'Ready for Pickup + WhatsApp'
+                              : repairLifecycleActionLabels[nextStatus]}
+                        </button>
+                      );
+                    })}
                   </div>
+                  {allowedNextStatuses.includes('quotation_sent') && !selectedJobHasValidQuotation ? (
+                    <div className="mt-2 text-xs text-amber-300">Please create a quotation before sending quotation.</div>
+                  ) : null}
                   {allowedNextStatuses.some(isCustomerReleaseStatus) && !afterRepairChecklistCompleted(afterRepairChecklist) ? (
                     <div className="mt-2 text-xs text-amber-300">Please complete After Repair Checklist before handing over the device to customer.</div>
                   ) : null}
@@ -5625,6 +5714,27 @@ export default function JobsPage() {
                     placeholder="Rejection reason"
                     className="rounded-md border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white"
                   />
+                </div>
+              ) : null}
+
+              {selectedJobStuckWithoutQuotation ? (
+                <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+                  <div className="font-medium">Quotation sent but no valid quotation is linked.</div>
+                  <div className="mt-1 text-xs text-amber-200">
+                    Revert this job to Diagnosis before creating the quotation.
+                  </div>
+                  {canManageReviews ? (
+                    <button
+                      type="button"
+                      disabled={actionLoading}
+                      onClick={handleRevertQuotationSentToDiagnosis}
+                      className="mt-3 rounded-md border border-amber-400/40 px-3 py-2 text-xs font-medium text-amber-100 hover:bg-amber-500/10 disabled:opacity-60"
+                    >
+                      Revert to Diagnosis
+                    </button>
+                  ) : (
+                    <div className="mt-2 text-xs text-amber-200">Ask an admin or manager to revert this job.</div>
+                  )}
                 </div>
               ) : null}
 
