@@ -27,6 +27,7 @@ const outsourceTypeOptions: Array<{ value: PartnerOutsourceType | 'all'; label: 
   { value: 'all', label: 'All types' },
   { value: 'motherboard_repair', label: 'Motherboard Repair' },
   { value: 'data_recovery', label: 'Data Recovery' },
+  { value: 'macbook_repair', label: 'Macbook Repair' },
 ];
 
 const statusOptions: Array<{ value: PartnerJobStatus | 'all'; label: string }> = [
@@ -110,7 +111,7 @@ function getStatusClass(status: PartnerJobStatus): string {
 }
 
 function formatOutsourceType(type: PartnerOutsourceType): string {
-  return type === 'motherboard_repair' ? 'Motherboard Repair' : 'Data Recovery';
+  return outsourceTypeOptions.find((option) => option.value === type)?.label || type.replaceAll('_', ' ');
 }
 
 function formatStatus(status: PartnerJobStatus): string {

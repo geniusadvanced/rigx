@@ -1,6 +1,6 @@
 import type { Timestamp } from 'firebase/firestore';
 
-export type PartnerOutsourceType = 'motherboard_repair' | 'data_recovery';
+export type PartnerOutsourceType = 'motherboard_repair' | 'data_recovery' | 'macbook_repair';
 export type PartnerJobStatus = 'sent' | 'in_progress' | 'waiting_parts' | 'completed' | 'returned' | 'cancelled';
 
 export interface PartnerHardwareChecklistPart {
