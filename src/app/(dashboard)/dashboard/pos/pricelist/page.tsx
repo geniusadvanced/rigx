@@ -62,11 +62,28 @@ const branchOptions: Array<{ value: '' | PosBranch; label: string }> = [
   { value: 'cyberjaya', label: 'Cyberjaya' },
 ];
 
+function normalizeBranch(value?: string): '' | PosBranch {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'bangi') return 'bangi';
+  if (normalized === 'cyberjaya') return 'cyberjaya';
+  return '';
+}
+
+function numberInputValue(value?: number): string {
+  const numeric = Number(value || 0);
+  return numeric > 0 ? String(numeric) : '';
+}
+
+function numberFromInput(value: string): number {
+  return value === '' ? 0 : Number(value);
+}
+
 export default function PosPricelistPage() {
   const { profile, loading } = useUser();
   const [items, setItems] = useState<PriceItem[]>([]);
   const [form, setForm] = useState<PriceItemInput>(emptyForm);
   const [editingId, setEditingId] = useState('');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [message, setMessage] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [branchFilter, setBranchFilter] = useState('');
@@ -75,6 +92,10 @@ export default function PosPricelistPage() {
   const canView = can(profile?.role, 'pos.view');
   const canManage = can(profile?.role, 'pos.manage');
   const canAdminAction = String(profile?.role || '').toLowerCase() === 'admin';
+  const userBranch = normalizeBranch(profile?.branchId);
+  const formBranchOptions = canAdminAction || !userBranch
+    ? branchOptions
+    : branchOptions.filter((option) => option.value === userBranch);
 
   const categories = useMemo(() => Array.from(new Set(items.map((item) => item.category).filter(Boolean))).sort(), [items]);
   const filteredItems = useMemo(() => items.filter((item) => {
@@ -96,13 +117,35 @@ export default function PosPricelistPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.role]);
 
+  useEffect(() => {
+    if (!profile || canAdminAction || editingId) return;
+    setForm((current) => ({ ...current, branch: userBranch }));
+  }, [canAdminAction, editingId, profile, userBranch]);
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!profile || !canManage) return;
+    if (!form.name.trim()) {
+      setMessage('Item / Service Name is required');
+      return;
+    }
+    if (!form.category.trim()) {
+      setMessage('Category is required');
+      return;
+    }
+    if (!canAdminAction && !form.branch) {
+      setMessage('Branch is required');
+      return;
+    }
+    if ((form.pricingType || 'fixed') === 'fixed' && Number(form.basePrice || 0) <= 0) {
+      setMessage('Price is required');
+      return;
+    }
     try {
       if (editingId) await updatePriceItem(editingId, form, profile);
       else await createPriceItem(form, profile);
-      setForm(emptyForm);
+      setForm({ ...emptyForm, branch: canAdminAction ? '' : userBranch });
+      setAdvancedOpen(false);
       setEditingId('');
       setMessage(editingId ? 'Price item updated' : 'Price item created');
       await loadItems();
@@ -161,37 +204,102 @@ export default function PosPricelistPage() {
       </div>
       {message ? <div className="rounded-2xl border border-white/10 bg-[#151515]/90 p-3 text-sm text-zinc-300">{message}</div> : null}
       {canManage ? (
-        <form onSubmit={handleSubmit} className="grid gap-3 rounded-3xl border border-white/10 bg-[#111111]/90 p-5 md:grid-cols-4">
-          <input value={form.category} onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))} placeholder="Category" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white" />
-          <input value={form.serviceGroup || ''} onChange={(event) => setForm((current) => ({ ...current, serviceGroup: event.target.value }))} placeholder="Service group" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white" />
-          <input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="Service name" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white" />
-          <input value={form.packageName || ''} onChange={(event) => setForm((current) => ({ ...current, packageName: event.target.value }))} placeholder="Package name" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white" />
-          <select value={form.pricingType || 'fixed'} onChange={(event) => setForm((current) => ({ ...current, pricingType: event.target.value as PriceItemPricingType }))} className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white">
-            {pricingTypes.map((type) => <option key={type} value={type}>{type}</option>)}
-          </select>
-          <select value={form.type || 'service'} onChange={(event) => setForm((current) => ({ ...current, type: event.target.value as PriceItemType }))} className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white">
-            {itemTypes.map((type) => <option key={type} value={type}>{type}</option>)}
-          </select>
-          <input type="number" min="0" step="0.01" value={form.basePrice} onChange={(event) => setForm((current) => ({ ...current, basePrice: Number(event.target.value) }))} placeholder="Base price" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white" />
-          <input type="number" min="0" step="0.01" value={form.minPrice || 0} onChange={(event) => setForm((current) => ({ ...current, minPrice: Number(event.target.value) }))} placeholder="Min price" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white" />
-          <input type="number" min="0" step="0.01" value={form.maxPrice || 0} onChange={(event) => setForm((current) => ({ ...current, maxPrice: Number(event.target.value) }))} placeholder="Max price" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white" />
-          <input value={form.unit || ''} onChange={(event) => setForm((current) => ({ ...current, unit: event.target.value }))} placeholder="Unit" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white" />
-          <input value={form.deviceType || ''} onChange={(event) => setForm((current) => ({ ...current, deviceType: event.target.value }))} placeholder="Device type" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white" />
-          <input value={form.model || ''} onChange={(event) => setForm((current) => ({ ...current, model: event.target.value }))} placeholder="Model" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white" />
-          <input value={form.variant || ''} onChange={(event) => setForm((current) => ({ ...current, variant: event.target.value }))} placeholder="Variant" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white" />
-          <input value={form.capacityTier || ''} onChange={(event) => setForm((current) => ({ ...current, capacityTier: event.target.value }))} placeholder="Capacity tier" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white" />
-          <input value={form.problemType || ''} onChange={(event) => setForm((current) => ({ ...current, problemType: event.target.value }))} placeholder="Problem type" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white" />
-          <select value={form.branch || ''} onChange={(event) => setForm((current) => ({ ...current, branch: event.target.value as '' | PosBranch }))} className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white">
-            {branchOptions.map((option) => <option key={option.value || 'all'} value={option.value}>{option.label}</option>)}
-          </select>
-          <input type="number" min="0" step="0.01" value={form.costPrice || 0} onChange={(event) => setForm((current) => ({ ...current, costPrice: Number(event.target.value) }))} placeholder="Cost price" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white" />
-          <input type="number" min="0" value={form.warrantyDays || 0} onChange={(event) => setForm((current) => ({ ...current, warrantyDays: Number(event.target.value), warrantyDurationDays: Number(event.target.value) }))} placeholder="Warranty days" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white" />
-          <input value={form.customerNotes || ''} onChange={(event) => setForm((current) => ({ ...current, customerNotes: event.target.value }))} placeholder="Customer notes" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white md:col-span-2" />
-          <input value={form.internalNotes || ''} onChange={(event) => setForm((current) => ({ ...current, internalNotes: event.target.value }))} placeholder="Internal notes" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white md:col-span-2" />
-          <label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={form.commissionEligible} onChange={(event) => setForm((current) => ({ ...current, commissionEligible: event.target.checked }))} /> Commission eligible</label>
-          <label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={form.active} onChange={(event) => setForm((current) => ({ ...current, active: event.target.checked }))} /> Active</label>
-          <button className="rounded-xl bg-gradient-to-r from-[#C96A2B] to-[#F97316] px-4 py-2 text-sm font-semibold text-white">{editingId ? 'Update' : 'Create'}</button>
-          {editingId ? <button type="button" onClick={() => { setEditingId(''); setForm(emptyForm); }} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-200">Cancel</button> : null}
+        <form onSubmit={handleSubmit} className="rounded-3xl border border-white/10 bg-[#111111]/90 p-5">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-white">{editingId ? 'Edit Pricelist Item' : 'Quick Add Pricelist Item'}</h2>
+              <p className="mt-1 text-sm text-zinc-400">Add common products and repair services with the fields staff use most.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAdvancedOpen((current) => !current)}
+              className="rounded-xl border border-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-[#1A1A1A]"
+            >
+              {advancedOpen ? 'Hide Advanced Fields' : 'Show Advanced Fields'}
+            </button>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-4">
+            <label className="block text-sm text-zinc-300 md:col-span-2">
+              Item / Service Name
+              <input required value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="MacBook Battery Replacement" className="mt-2 w-full rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white placeholder:text-zinc-600" />
+            </label>
+            <label className="block text-sm text-zinc-300">
+              Category
+              <input required value={form.category} onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))} placeholder="MacBook Repair" className="mt-2 w-full rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white placeholder:text-zinc-600" />
+            </label>
+            <label className="block text-sm text-zinc-300">
+              Price
+              <input required type="number" min="0.01" step="0.01" value={numberInputValue(form.basePrice)} onChange={(event) => setForm((current) => ({ ...current, basePrice: numberFromInput(event.target.value) }))} placeholder="350" className="mt-2 w-full rounded-xl border border-orange-500/30 bg-[#050505] px-3 py-2 text-sm text-white placeholder:text-zinc-600" />
+            </label>
+            <label className="block text-sm text-zinc-300">
+              Service Group
+              <input value={form.serviceGroup || ''} onChange={(event) => setForm((current) => ({ ...current, serviceGroup: event.target.value }))} placeholder="Battery" className="mt-2 w-full rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white placeholder:text-zinc-600" />
+            </label>
+            <label className="block text-sm text-zinc-300">
+              Type
+              <select value={form.type || 'service'} onChange={(event) => setForm((current) => ({ ...current, type: event.target.value as PriceItemType }))} className="mt-2 w-full rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white">
+                {itemTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+              </select>
+            </label>
+            <label className="block text-sm text-zinc-300">
+              Branch
+              <select value={form.branch || ''} onChange={(event) => setForm((current) => ({ ...current, branch: event.target.value as '' | PosBranch }))} disabled={!canAdminAction && Boolean(userBranch)} className="mt-2 w-full rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white disabled:opacity-70">
+                {formBranchOptions.map((option) => <option key={option.value || 'all'} value={option.value}>{option.label}</option>)}
+              </select>
+            </label>
+            <label className="block text-sm text-zinc-300">
+              Warranty Days
+              <input type="number" min="0" value={numberInputValue(form.warrantyDays)} onChange={(event) => setForm((current) => ({ ...current, warrantyDays: numberFromInput(event.target.value), warrantyDurationDays: numberFromInput(event.target.value) }))} placeholder="90" className="mt-2 w-full rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white placeholder:text-zinc-600" />
+            </label>
+            <label className="block text-sm text-zinc-300 md:col-span-2">
+              Customer Display Notes
+              <textarea value={form.customerNotes || ''} onChange={(event) => setForm((current) => ({ ...current, customerNotes: event.target.value }))} placeholder="Includes installation and testing" rows={3} className="mt-2 w-full rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white placeholder:text-zinc-600" />
+            </label>
+            <label className="block text-sm text-zinc-300 md:col-span-2">
+              Internal Staff Notes
+              <textarea value={form.internalNotes || ''} onChange={(event) => setForm((current) => ({ ...current, internalNotes: event.target.value }))} placeholder="Supplier, margin, or staff-only handling note" rows={3} className="mt-2 w-full rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white placeholder:text-zinc-600" />
+            </label>
+            <label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={form.active} onChange={(event) => setForm((current) => ({ ...current, active: event.target.checked }))} /> Active</label>
+            <label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={form.commissionEligible} onChange={(event) => setForm((current) => ({ ...current, commissionEligible: event.target.checked }))} /> Commission Eligible</label>
+          </div>
+
+          {advancedOpen ? (
+            <div className="mt-5 grid gap-3 border-t border-white/10 pt-5 md:grid-cols-4">
+              <label className="block text-sm text-zinc-300">
+                Pricing Type
+                <select value={form.pricingType || 'fixed'} onChange={(event) => setForm((current) => ({ ...current, pricingType: event.target.value as PriceItemPricingType }))} className="mt-2 w-full rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white">
+                  {pricingTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+                </select>
+              </label>
+              <label className="block text-sm text-zinc-300">
+                Min Price
+                <input type="number" min="0" step="0.01" value={numberInputValue(form.minPrice)} onChange={(event) => setForm((current) => ({ ...current, minPrice: numberFromInput(event.target.value) }))} placeholder="300" className="mt-2 w-full rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white placeholder:text-zinc-600" />
+              </label>
+              <label className="block text-sm text-zinc-300">
+                Max Price
+                <input type="number" min="0" step="0.01" value={numberInputValue(form.maxPrice)} onChange={(event) => setForm((current) => ({ ...current, maxPrice: numberFromInput(event.target.value) }))} placeholder="450" className="mt-2 w-full rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white placeholder:text-zinc-600" />
+              </label>
+              <label className="block text-sm text-zinc-300">
+                Cost
+                <input type="number" min="0" step="0.01" value={numberInputValue(form.costPrice)} onChange={(event) => setForm((current) => ({ ...current, costPrice: numberFromInput(event.target.value) }))} placeholder="180" className="mt-2 w-full rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white placeholder:text-zinc-600" />
+              </label>
+              <input value={form.deviceType || ''} onChange={(event) => setForm((current) => ({ ...current, deviceType: event.target.value }))} placeholder="Device type" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white placeholder:text-zinc-600" />
+              <input value={form.model || ''} onChange={(event) => setForm((current) => ({ ...current, model: event.target.value }))} placeholder="Model" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white placeholder:text-zinc-600" />
+              <input value={form.variant || ''} onChange={(event) => setForm((current) => ({ ...current, variant: event.target.value }))} placeholder="Variant" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white placeholder:text-zinc-600" />
+              <input value={form.capacityTier || ''} onChange={(event) => setForm((current) => ({ ...current, capacityTier: event.target.value }))} placeholder="Capacity tier" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white placeholder:text-zinc-600" />
+              <input value={form.problemType || ''} onChange={(event) => setForm((current) => ({ ...current, problemType: event.target.value }))} placeholder="Problem type" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white placeholder:text-zinc-600" />
+              <input value={form.packageName || ''} onChange={(event) => setForm((current) => ({ ...current, packageName: event.target.value }))} placeholder="Package name" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white placeholder:text-zinc-600" />
+              <input value={form.unit || ''} onChange={(event) => setForm((current) => ({ ...current, unit: event.target.value }))} placeholder="Unit" className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white placeholder:text-zinc-600" />
+            </div>
+          ) : null}
+
+          <div className="mt-5 flex flex-wrap gap-2">
+            <button className="rounded-xl bg-gradient-to-r from-[#C96A2B] to-[#F97316] px-4 py-2 text-sm font-semibold text-white">{editingId ? 'Update Item' : 'Create Item'}</button>
+            {editingId ? (
+              <button type="button" onClick={() => { setEditingId(''); setForm({ ...emptyForm, branch: canAdminAction ? '' : userBranch }); setAdvancedOpen(false); }} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-200">Cancel</button>
+            ) : null}
+          </div>
         </form>
       ) : null}
       <div className="grid gap-3 rounded-3xl border border-white/10 bg-[#111111]/90 p-5 md:grid-cols-4">
@@ -232,7 +340,28 @@ export default function PosPricelistPage() {
                 {canManage ? (
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-2">
-                      <button onClick={() => { setEditingId(item.priceItemId); setForm({ ...emptyForm, ...item, warrantyDays: item.warrantyDays ?? item.warrantyDurationDays ?? 0 }); }} className="rounded-md border border-white/10 px-2 py-1 text-xs text-zinc-200">Edit</button>
+                      <button
+                        onClick={() => {
+                          setEditingId(item.priceItemId);
+                          setForm({ ...emptyForm, ...item, warrantyDays: item.warrantyDays ?? item.warrantyDurationDays ?? 0 });
+                          setAdvancedOpen(Boolean(
+                            item.pricingType && item.pricingType !== 'fixed'
+                            || item.minPrice
+                            || item.maxPrice
+                            || item.costPrice
+                            || item.deviceType
+                            || item.model
+                            || item.variant
+                            || item.capacityTier
+                            || item.problemType
+                            || item.packageName
+                            || item.unit,
+                          ));
+                        }}
+                        className="rounded-md border border-white/10 px-2 py-1 text-xs text-zinc-200"
+                      >
+                        Edit
+                      </button>
                       <button onClick={() => void handleDuplicate(item)} className="rounded-md border border-white/10 px-2 py-1 text-xs text-zinc-200">Duplicate</button>
                       {canAdminAction ? <button onClick={() => void handleDelete(item)} className="rounded-md border border-red-500/30 px-2 py-1 text-xs text-red-200">Delete</button> : null}
                     </div>
