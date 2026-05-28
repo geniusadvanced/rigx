@@ -2768,6 +2768,14 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
+    match /appSettings/{settingsId} {
+      allow read, create, update, delete: if isAdmin();
+    }
+
+    match /attendanceSettings/{branchId} {
+      allow read, create, update, delete: if isAdmin();
+    }
+
     match /audit_logs/{auditLogId} {
       allow read: if isAdminOrManager() || isOwnPayslipAuditLog();
       allow create: if signedIn()

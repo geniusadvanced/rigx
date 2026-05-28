@@ -17,6 +17,7 @@ import {
   Wrench,
   ShieldCheck,
   Search,
+  Settings,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { ApprovalNotificationBell } from '@/features/notifications/ApprovalNotificationBell';
@@ -122,6 +123,7 @@ adminNavSections.splice(4, 1, {
     { href: '/dashboard/reports', label: 'Reports', icon: ChartNoAxesCombined },
     { href: '/dashboard/audit-logs', label: 'Audit Logs', icon: ClipboardList },
     { href: '/dashboard/message-templates', label: 'Message Templates', icon: ClipboardList },
+    { href: '/dashboard/settings', label: 'Settings', icon: Settings },
   ],
 });
 

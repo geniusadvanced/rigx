@@ -217,6 +217,27 @@ function formatWifiCard(part?: PartnerHardwareChecklistWifiCard): string {
   return `WiFi Card: Included${part.model ? ` (${part.model})` : ''}`;
 }
 
+function compactValue(value?: string | null): string {
+  return String(value || '').trim() || '-';
+}
+
+function formatLabelPart(part?: PartnerHardwareChecklistPart): string {
+  if (!part) return '-';
+  if (!part.included) return 'Not included';
+  const count = part.unitCount ? `${part.unitCount} x` : '';
+  return [count, part.capacity, part.type].filter(Boolean).join(' ') || 'Included';
+}
+
+function formatLabelWifiCard(part?: PartnerHardwareChecklistWifiCard): string {
+  if (!part) return '-';
+  if (!part.included) return 'Not included';
+  return part.model ? `Included (${part.model})` : 'Included';
+}
+
+function labelDevice(job: PartnerJob): string {
+  return [job.deviceBrand, job.deviceModel || job.device].filter(Boolean).join(' ') || '-';
+}
+
 export default function GeniusPartnersPage() {
   const { profile, loading } = useUser();
   const { jobs, loading: jobsLoading, error: jobsError } = useJobs(profile?.role ? profile : null);
@@ -232,6 +253,7 @@ export default function GeniusPartnersPage() {
   const [pageLoading, setPageLoading] = useState(false);
   const [actionId, setActionId] = useState('');
   const [message, setMessage] = useState('');
+  const [printLabelJob, setPrintLabelJob] = useState<PartnerJob | null>(null);
 
   const canManage = profile?.role === 'admin' || profile?.role === 'manager';
 
@@ -276,6 +298,12 @@ export default function GeniusPartnersPage() {
       return matchesSearch && matchesType && matchesStatus && matchesPartner;
     });
   }, [partnerFilter, partnerJobs, search, statusFilter, typeFilter]);
+
+  useEffect(() => {
+    if (!printLabelJob) return;
+    const timeout = window.setTimeout(() => window.print(), 50);
+    return () => window.clearTimeout(timeout);
+  }, [printLabelJob]);
 
   const loadPartnerJobs = useCallback(async () => {
     setPageLoading(true);
@@ -515,6 +543,75 @@ export default function GeniusPartnersPage() {
 
   return (
     <section>
+      <style jsx global>{`
+        .partner-hardware-print-area {
+          display: none;
+        }
+
+        @media print {
+          body * {
+            visibility: hidden !important;
+          }
+
+          .partner-hardware-print-area,
+          .partner-hardware-print-area * {
+            visibility: visible !important;
+          }
+
+          .partner-hardware-print-area {
+            display: block !important;
+            position: fixed;
+            inset: 0 auto auto 0;
+            width: 80mm;
+            min-height: 120mm;
+            background: #fff;
+            color: #000;
+            padding: 4mm;
+            font-family: Arial, Helvetica, sans-serif;
+            z-index: 99999;
+          }
+
+          @page {
+            size: 80mm auto;
+            margin: 0;
+          }
+        }
+      `}</style>
+
+      {printLabelJob ? (
+        <div className="partner-hardware-print-area">
+          <div className="text-[13px] font-black uppercase leading-tight tracking-wide text-black">GENIUS PARTNER CHECKLIST</div>
+          <div className="mt-3 border-y border-black py-2">
+            <div className="text-[17px] font-black uppercase leading-tight text-black">PARTNER: {compactValue(printLabelJob.partnerName)}</div>
+            <div className="mt-1 text-[12px] font-bold uppercase text-black">TYPE: {formatOutsourceType(printLabelJob.outsourceType)}</div>
+          </div>
+
+          <div className="mt-3 space-y-1 text-[11px] font-bold uppercase leading-tight text-black">
+            <div>RIGX JOB: {getPartnerJobRigxNumber(printLabelJob)}</div>
+            <div>CUSTOMER: {compactValue(printLabelJob.customerName)}</div>
+            <div>PHONE: {compactValue(printLabelJob.customerPhone)}</div>
+            <div>DEVICE: {labelDevice(printLabelJob)}</div>
+          </div>
+
+          <div className="mt-3 border-t border-black pt-2">
+            <div className="text-[12px] font-black uppercase text-black">HARDWARE CHECKLIST</div>
+            <div className="mt-1 space-y-1 text-[11px] font-bold uppercase leading-tight text-black">
+              <div>RAM: {formatLabelPart(printLabelJob.hardwareChecklist?.ram)}</div>
+              <div>SSD: {formatLabelPart(printLabelJob.hardwareChecklist?.ssd)}</div>
+              <div>HDD: {formatLabelPart(printLabelJob.hardwareChecklist?.hdd)}</div>
+              <div>WIFI CARD: {formatLabelWifiCard(printLabelJob.hardwareChecklist?.wifiCard)}</div>
+            </div>
+          </div>
+
+          <div className="mt-3 border-t border-black pt-2 text-[10px] font-bold uppercase leading-tight text-black">
+            <div>SENT: {formatTimestamp(printLabelJob.sentDate)}</div>
+            <div>CHECKED BY: {compactValue(printLabelJob.hardwareChecklist?.checkedBy || printLabelJob.createdByDisplayName)}</div>
+            <div className="mt-2 text-[11px] font-black">VERIFY COMPONENTS BEFORE ACCEPTING</div>
+            <div className="mt-2 text-[8px] font-normal normal-case">Ref: {compactValue(printLabelJob.partnerExternalJobId || printLabelJob.partnerJobSheetNo || printLabelJob.partnerJobId)}</div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold text-white">Genius Partners</h1>
@@ -1026,6 +1123,13 @@ export default function GeniusPartnersPage() {
                   <td className="px-3 py-3">
                     {canManage ? (
                       <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setPrintLabelJob(job)}
+                          className="rounded-md border border-orange-500/30 px-3 py-2 text-xs text-orange-200 hover:bg-orange-500/10"
+                        >
+                          Print Hardware Label
+                        </button>
                         <button
                           type="button"
                           onClick={() => startEdit(job)}
