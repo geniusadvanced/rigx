@@ -436,6 +436,15 @@ service cloud.firestore {
         );
     }
 
+    function canRefreshDeviceChecklistTechnicianVerification() {
+      return 'technicianVerification' in resource.data
+        && (
+          resource.data.technicianVerification.authUid == request.auth.uid
+          || isAdmin()
+          || (isManager() && branchMatchesCurrentUser(request.resource.data.branchId))
+        );
+    }
+
     function hasValidDeviceChecklistTechnicianVerificationUpdate() {
       return !('technicianVerification' in request.resource.data)
         || (
@@ -449,6 +458,7 @@ service cloud.firestore {
               !('technicianVerification' in resource.data)
               && request.resource.data.technicianVerification.authUid == request.auth.uid
             )
+            || canRefreshDeviceChecklistTechnicianVerification()
           )
         );
     }
