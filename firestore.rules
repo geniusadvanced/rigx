@@ -401,7 +401,7 @@ service cloud.firestore {
         && data.branchId == get(jobPath(data.jobId)).data.branchId
         && (
           isAdmin()
-          || (isManager() && data.branchId == currentUser().data.branchId)
+          || (isManager() && branchMatchesCurrentUser(data.branchId))
           || (
             role() == 'technician'
             && (
