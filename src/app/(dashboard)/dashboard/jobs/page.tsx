@@ -791,6 +791,8 @@ export default function JobsPage() {
   const [afterRepairChecklist, setAfterRepairChecklist] = useState<DeviceChecklist | null>(null);
   const [showDeviceChecklistEditor, setShowDeviceChecklistEditor] = useState(false);
   const [showAfterRepairChecklistEditor, setShowAfterRepairChecklistEditor] = useState(false);
+  const [deviceChecklistAction, setDeviceChecklistAction] = useState<'draft' | 'complete' | ''>('');
+  const [deviceChecklistFeedback, setDeviceChecklistFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [deviceChecklistCustomerSearch, setDeviceChecklistCustomerSearch] = useState('');
   const [deviceChecklistOverrideReason, setDeviceChecklistOverrideReason] = useState('');
   const [deviceChecklistForm, setDeviceChecklistForm] = useState<DeviceChecklistFormState>(() => createDeviceChecklistFormDefaults());
@@ -1353,6 +1355,8 @@ export default function JobsPage() {
 
   useEffect(() => {
     if (!selectedJob) return;
+    setDeviceChecklistFeedback(null);
+    setDeviceChecklistAction('');
     setDetailForm({
       customerId: selectedJob.customerId || null,
       deviceId: selectedJob.deviceId || null,
@@ -2658,7 +2662,10 @@ export default function JobsPage() {
     }
 
     const scrollAnchor = captureScrollAnchor();
+    const nextAction = completeByStaff ? 'complete' : 'draft';
     setActionLoading(true);
+    setDeviceChecklistAction(nextAction);
+    setDeviceChecklistFeedback(null);
     setMessage('');
     try {
       const selectedCustomer = deviceChecklistCustomer || undefined;
@@ -2728,7 +2735,7 @@ export default function JobsPage() {
       }
 
       const updatedAt = Timestamp.now();
-      setDeviceChecklist({
+      const nextChecklist: DeviceChecklist = {
         ...checklist,
         customerId: selectedCustomer?.customerId || selectedJob.customerId || '',
         customerNameSnapshot: selectedCustomer?.fullName || selectedJob.customerName || '',
@@ -2762,11 +2769,24 @@ export default function JobsPage() {
               checkedAt: updatedAt,
               authUid: profile.uid,
               verificationText: 'Auto verified by RIGX System',
-            }
+          }
           : checklist.technicianVerification,
         updatedAt,
+      };
+      setDeviceChecklist(nextChecklist);
+      setShowDeviceChecklistEditor(true);
+      const reloadedChecklist = await getDeviceChecklistByJob({
+        jobId: selectedJob.docId,
+        user: profile,
+        jobBranchId: selectedJob.branchId,
+        jobTechnicianId: selectedJob.technicianId,
+      }).catch(() => null);
+      if (reloadedChecklist) setDeviceChecklist(reloadedChecklist);
+      setDeviceChecklistFeedback({
+        type: 'success',
+        message: completeByStaff ? 'Staff checklist completed successfully.' : 'Checklist draft saved successfully.',
       });
-      setMessage(completeByStaff ? 'Device Checklist completed by staff.' : 'Device Checklist saved.');
+      setMessage(completeByStaff ? 'Staff checklist completed successfully.' : 'Checklist draft saved successfully.');
       restoreScrollAnchor(scrollAnchor);
     } catch (error) {
       console.error('[DEVICE CHECKLIST SAVE ERROR]', {
@@ -2777,9 +2797,14 @@ export default function JobsPage() {
         branchId: profile.branchId,
         error: loggableError(error),
       });
-      setMessage(error instanceof Error ? error.message : 'Unable to save Device Checklist.');
+      const fallbackMessage = completeByStaff
+        ? 'Failed to complete staff checklist. Please try again.'
+        : 'Failed to save checklist draft. Please try again.';
+      setDeviceChecklistFeedback({ type: 'error', message: fallbackMessage });
+      setMessage(fallbackMessage);
       restoreScrollAnchor(scrollAnchor);
     } finally {
+      setDeviceChecklistAction('');
       setActionLoading(false);
     }
   }
@@ -5049,6 +5074,19 @@ export default function JobsPage() {
                   <span className={`rounded-full border px-2 py-1 ${deviceChecklistStatusClass(deviceChecklist?.checklistStatus)}`}>
                     {deviceChecklistStatusLabel(deviceChecklist?.checklistStatus)}
                   </span>
+                  {deviceChecklistFeedback ? (
+                    <span className={`ml-2 rounded-full border px-2 py-1 ${
+                      deviceChecklistFeedback.type === 'success'
+                        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                        : 'border-red-500/40 bg-red-500/10 text-red-200'
+                    }`}>
+                      {deviceChecklistFeedback.type === 'success'
+                        ? deviceChecklistFeedback.message.includes('completed')
+                          ? 'Completed'
+                          : 'Draft saved'
+                        : 'Save failed'}
+                    </span>
+                  ) : null}
                 </div>
                 <div className="mt-2 flex flex-wrap gap-2 text-xs">
                   <span className={`rounded-full border px-2 py-1 ${afterRepairChecklistCompleted(afterRepairChecklist) ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/40 bg-amber-500/10 text-amber-200'}`}>
@@ -5185,6 +5223,15 @@ export default function JobsPage() {
 
             {showDeviceChecklistEditor ? (
               <div className="mt-4 rounded-md border border-white/10 bg-[#0B0B0B] p-3">
+                {deviceChecklistFeedback ? (
+                  <div className={`mb-3 rounded-md border px-3 py-2 text-sm ${
+                    deviceChecklistFeedback.type === 'success'
+                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-100'
+                      : 'border-red-500/30 bg-red-500/10 text-red-100'
+                  }`}>
+                    {deviceChecklistFeedback.message}
+                  </div>
+                ) : null}
                 <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
@@ -5434,19 +5481,19 @@ export default function JobsPage() {
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button
                     type="button"
-                    disabled={actionLoading}
+                    disabled={actionLoading || deviceChecklistAction !== ''}
                     onClick={() => handleSaveDeviceChecklist(false)}
                     className="rounded-md border border-white/10 px-3 py-2 text-xs font-medium text-slate-200 disabled:opacity-60"
                   >
-                    Save Draft
+                    {deviceChecklistAction === 'draft' ? 'Saving...' : 'Save Draft'}
                   </button>
                   <button
                     type="button"
-                    disabled={actionLoading}
+                    disabled={actionLoading || deviceChecklistAction !== ''}
                     onClick={() => handleSaveDeviceChecklist(true)}
                     className="rounded-md bg-orange-500 px-3 py-2 text-xs font-semibold text-black disabled:opacity-60"
                   >
-                    Complete Staff Checklist
+                    {deviceChecklistAction === 'complete' ? 'Completing...' : 'Complete Staff Checklist'}
                   </button>
                 </div>
               </div>
