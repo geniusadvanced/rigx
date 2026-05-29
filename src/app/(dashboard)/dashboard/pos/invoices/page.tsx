@@ -177,6 +177,7 @@ export default function PosInvoicesPage() {
                 <td className="px-4 py-3 text-zinc-300">{warrantySignatureStatus(invoice)}</td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-2">
+                    <Link href={`/dashboard/pos/invoices/${invoice.invoiceId}`} className="text-orange-200">Edit</Link>
                     {!isVoid ? <button disabled={actionLoading} className="text-orange-200 disabled:text-zinc-600" onClick={() => openWhatsApp(invoice)}>WhatsApp</button> : null}
                     {!isVoid ? <button disabled={actionLoading} className="text-orange-200 disabled:text-zinc-600" onClick={() => sendWhatsAppApi(invoice)}>Send API</button> : null}
                     <button type="button" onClick={() => downloadInvoicePdf(invoice)} className="text-orange-200">PDF</button>

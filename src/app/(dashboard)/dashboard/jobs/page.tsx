@@ -5877,7 +5877,7 @@ export default function JobsPage() {
                           <div className="flex flex-wrap gap-2">
                             {can(profile?.role, 'pos.operate') ? (
                               <a href={`/dashboard/pos/quotations/${quotation.quotationId}`} className="rounded-md border border-orange-500/25 px-2 py-1 text-orange-200">
-                                View Quotation
+                                View / Edit Quotation
                               </a>
                             ) : null}
                             <button
@@ -6050,9 +6050,9 @@ export default function JobsPage() {
 	                    {posFinancialSummary.quotationIds.map((quotationId) => (
 	                      <a key={quotationId} href={`/dashboard/pos/quotations/${quotationId}`} className="rounded-md border border-orange-500/25 px-2 py-1 text-orange-200">Quotation</a>
 	                    ))}
-	                    {posFinancialSummary.invoiceIds.map((invoiceId) => (
-	                      <a key={invoiceId} href={`/dashboard/pos/invoices/${invoiceId}`} className="rounded-md border border-orange-500/25 px-2 py-1 text-orange-200">Invoice</a>
-	                    ))}
+                    {posFinancialSummary.invoiceIds.map((invoiceId) => (
+                      <a key={invoiceId} href={`/dashboard/pos/invoices/${invoiceId}`} className="rounded-md border border-orange-500/25 px-2 py-1 text-orange-200">Invoice / Edit</a>
+                    ))}
 	                    {canManageReviews && linkedPosInvoices.length === 0 ? (
 	                      <button type="button" disabled={actionLoading} onClick={handleGenerateInvoiceFromJob} className="rounded-md border border-orange-500/25 px-2 py-1 text-orange-200 disabled:opacity-50">Generate Invoice</button>
 	                    ) : null}

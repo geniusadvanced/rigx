@@ -7,6 +7,7 @@ import { doc, getDoc } from 'firebase/firestore';
 import { formatJobDeviceLabel } from '@/components/documents/documentUtils';
 import { getAuditLogsForEntity } from '@/features/audit/services/auditLogService';
 import type { AuditLog } from '@/features/audit/types';
+import { PosLineItemsEditor } from '@/features/pos/components/PosLineItemsEditor';
 import { downloadQuotationPdf } from '@/features/pos/generatePosPdf';
 import {
   approvePosQuotation,
@@ -21,8 +22,9 @@ import {
   regenerateQuotationPublicToken,
   rejectPosQuotation,
   revokeQuotationPublicToken,
+  updateQuotationLineItems,
 } from '@/features/pos/posService';
-import type { PosInvoice, PosQuotation } from '@/features/pos/types';
+import type { PosInvoice, PosLineItem, PosQuotation } from '@/features/pos/types';
 import { getWhatsAppInboundMessagesForEntity, getWhatsAppMessagesForEntity, type PosWhatsAppInboundMessage, type PosWhatsAppMessageLog } from '@/features/pos/whatsappMessageService';
 import { db } from '@/lib/firebase/init';
 import { useUser } from '@/lib/hooks/useUser';
@@ -55,6 +57,11 @@ export default function PosQuotationDetailPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'sent' | 'approved' | 'rejected' | 'expired' | 'invoice' | null>(null);
   const [rejectionReason, setRejectionReason] = useState('');
+  const [editOpen, setEditOpen] = useState(false);
+  const [editItems, setEditItems] = useState<PosLineItem[]>([]);
+  const [editDiscountAmount, setEditDiscountAmount] = useState('0');
+  const [editDiscountReason, setEditDiscountReason] = useState('');
+  const [editValidUntil, setEditValidUntil] = useState('');
   const canOperate = can(profile?.role, 'pos.operate');
 
   const loadQuotation = useCallback(async () => {
@@ -185,6 +192,45 @@ export default function PosQuotationDetailPage() {
     }
   }
 
+  function openEditQuotation() {
+    if (!quotation) return;
+    setEditItems(quotation.items.length ? quotation.items : [{
+      name: 'Service quotation',
+      category: 'Service',
+      type: 'service',
+      quantity: 1,
+      unitPrice: Number(quotation.total || 0),
+      discount: 0,
+      total: Number(quotation.total || 0),
+    }]);
+    setEditDiscountAmount(String(quotation.discountAmount || 0));
+    setEditDiscountReason(quotation.discountReason || '');
+    setEditValidUntil(quotation.validUntil?.toDate?.().toISOString().slice(0, 10) || '');
+    setEditOpen(true);
+  }
+
+  async function handleSaveQuotationEdit() {
+    if (!profile || !quotation) return;
+    setActionLoading(true);
+    setMessage('');
+    try {
+      const updated = await updateQuotationLineItems(quotation, {
+        items: editItems,
+        discountAmount: Number(editDiscountAmount || 0),
+        discountReason: editDiscountReason,
+        validUntil: editValidUntil,
+      }, profile);
+      setQuotation(updated);
+      setEditOpen(false);
+      setMessage('Quotation updated successfully.');
+      await loadQuotation();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to update quotation');
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
   if (loading) return <div className="text-sm text-zinc-400">Loading quotation</div>;
   if (!canOperate) return <div className="rounded-3xl border border-white/10 bg-[#151515]/90 p-6 text-sm text-zinc-400">Access denied</div>;
   if (!quotation) return <div className="rounded-3xl border border-white/10 bg-[#151515]/90 p-6 text-sm text-zinc-400">{message || 'Quotation not found'}</div>;
@@ -220,8 +266,8 @@ export default function PosQuotationDetailPage() {
 
           <div className="overflow-x-auto rounded-3xl border border-white/10 bg-[#111111]/90">
             <table className="min-w-full text-left text-sm">
-              <thead className="border-b border-white/10 text-xs uppercase text-zinc-500"><tr><th className="px-4 py-3">Item</th><th className="px-4 py-3">Qty</th><th className="px-4 py-3">Unit</th><th className="px-4 py-3">Total</th></tr></thead>
-              <tbody>{quotation.items.map((item, index) => <tr key={`${item.name}-${index}`} className="border-b border-white/10 last:border-b-0"><td className="px-4 py-3 text-white">{item.name}</td><td className="px-4 py-3 text-zinc-300">{item.quantity}</td><td className="px-4 py-3 text-zinc-300">{formatCurrency(item.unitPrice)}</td><td className="px-4 py-3 text-zinc-300">{formatCurrency(item.total)}</td></tr>)}</tbody>
+              <thead className="border-b border-white/10 text-xs uppercase text-zinc-500"><tr><th className="px-4 py-3">Item</th><th className="px-4 py-3">Qty</th><th className="px-4 py-3">Unit</th><th className="px-4 py-3">Discount</th><th className="px-4 py-3">Total</th></tr></thead>
+              <tbody>{quotation.items.map((item, index) => <tr key={`${item.name}-${index}`} className="border-b border-white/10 last:border-b-0"><td className="px-4 py-3 text-white">{item.name}</td><td className="px-4 py-3 text-zinc-300">{item.quantity}</td><td className="px-4 py-3 text-zinc-300">{formatCurrency(item.unitPrice)}</td><td className="px-4 py-3 text-zinc-300">{formatCurrency(Number(item.discount || 0))}</td><td className="px-4 py-3 text-zinc-300">{formatCurrency(item.total)}</td></tr>)}</tbody>
             </table>
           </div>
 
@@ -289,6 +335,10 @@ export default function PosQuotationDetailPage() {
             <div className="flex justify-between text-lg font-semibold text-white"><span>Total</span><span>{formatCurrency(quotation.total)}</span></div>
           </div>
           <div className="mt-4 grid gap-2">
+            <button type="button" onClick={openEditQuotation} disabled={actionLoading || Boolean(convertedInvoice)} className="rounded-xl border border-orange-500/20 bg-[#141414] px-4 py-2 text-center text-sm text-orange-200 disabled:opacity-50">
+              Edit Quotation
+            </button>
+            {convertedInvoice ? <div className="text-xs text-zinc-500">Converted quotations are locked. Edit the invoice before payment if changes are needed.</div> : null}
             <button type="button" onClick={handleWhatsAppQuotation} disabled={actionLoading || quotation.status === 'approved' || quotation.status === 'rejected'} className="rounded-xl border border-orange-500/20 bg-[#141414] px-4 py-2 text-center text-sm text-orange-200 disabled:opacity-50">Send Quotation via WhatsApp</button>
             <div className="rounded-xl border border-white/10 bg-[#151515] p-3 text-xs text-zinc-400">
               <div className="font-medium text-white">Public approval link</div>
@@ -317,6 +367,36 @@ export default function PosQuotationDetailPage() {
             <div className="mt-5 flex justify-end gap-2">
               <button onClick={() => setConfirmAction(null)} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300">Cancel</button>
               <button disabled={actionLoading || (confirmAction === 'rejected' && !rejectionReason.trim())} onClick={runAction} className="rounded-xl bg-gradient-to-r from-[#C96A2B] to-[#F97316] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Confirm</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {editOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="max-h-[90vh] w-full max-w-5xl overflow-auto rounded-3xl border border-white/10 bg-[#151515] p-5">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-white">Edit Quotation</h2>
+                <p className="mt-1 text-sm text-zinc-400">{quotation.quotationNo} · {quotation.customerName}</p>
+              </div>
+              <button type="button" onClick={() => setEditOpen(false)} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300">Close</button>
+            </div>
+            <PosLineItemsEditor
+              items={editItems}
+              discountAmount={editDiscountAmount}
+              discountReason={editDiscountReason}
+              onItemsChange={setEditItems}
+              onDiscountAmountChange={setEditDiscountAmount}
+              onDiscountReasonChange={setEditDiscountReason}
+            />
+            <label className="mt-4 block">
+              <span className="mb-1 block text-xs uppercase text-zinc-500">Valid Until</span>
+              <input type="date" value={editValidUntil} onChange={(event) => setEditValidUntil(event.target.value)} className="rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white" />
+            </label>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setEditOpen(false)} disabled={actionLoading} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 disabled:opacity-50">Cancel</button>
+              <button type="button" onClick={handleSaveQuotationEdit} disabled={actionLoading} className="rounded-xl bg-gradient-to-r from-[#C96A2B] to-[#F97316] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{actionLoading ? 'Saving...' : 'Save Quotation'}</button>
             </div>
           </div>
         </div>

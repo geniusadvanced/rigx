@@ -75,6 +75,8 @@ export type AuditAction =
   | 'pos_quotation_expired'
   | 'pos_quotation_converted_to_invoice'
   | 'pos_invoice_created'
+  | 'pos_quotation_updated'
+  | 'pos_invoice_updated'
   | 'pos_invoice_voided'
   | 'pos_payment_recorded'
   | 'pos_payment_reversed'

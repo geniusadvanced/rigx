@@ -258,6 +258,41 @@ function isValidQuotationRecord(quotation: PosQuotation): boolean {
   return Number(quotation.total || 0) > 0 || quotation.items.some((item) => String(item.name || '').trim() && Number(item.quantity || 0) > 0);
 }
 
+function legacyLineItems(data: Record<string, unknown>, fallbackName: string): PosLineItem[] {
+  if (Array.isArray(data.items) && data.items.length > 0) return data.items as PosLineItem[];
+  const amount = Number(
+    data.total
+      ?? data.finalPrice
+      ?? data.amount
+      ?? data.quotationAmount
+      ?? data.invoiceAmount
+      ?? 0,
+  );
+  if (!Number.isFinite(amount) || amount <= 0) return [];
+  const name = cleanText(String(
+    data.description
+      ?? data.itemName
+      ?? data.serviceName
+      ?? data.deviceLabel
+      ?? data.deviceName
+      ?? fallbackName,
+  )) || fallbackName;
+  return [{
+    priceItemId: '',
+    name,
+    category: cleanText(String(data.category || '')) || 'Service',
+    type: cleanText(String(data.type || '')) || 'service',
+    quantity: 1,
+    unitPrice: amount,
+    discount: 0,
+    commissionEligible: false,
+    costPrice: 0,
+    netProfit: amount,
+    warrantyDurationDays: 0,
+    total: amount,
+  }];
+}
+
 async function moveLinkedJobLifecycle(
   jobId: string | undefined,
   nextStatus: RepairLifecycleStatus,
@@ -332,7 +367,18 @@ function mapPriceItem(id: string, data: Record<string, unknown>): PriceItem {
 }
 
 function mapQuotation(id: string, data: Record<string, unknown>): PosQuotation {
-  return { ...(data as Omit<PosQuotation, 'quotationId'>), quotationId: id };
+  const items = legacyLineItems(data, 'Service quotation');
+  const subtotal = Number(data.subtotal ?? items.reduce((sum, item) => sum + Number(item.total || 0), 0));
+  const discountAmount = Number(data.discountAmount ?? 0);
+  const total = Number(data.total ?? Math.max(0, subtotal - discountAmount));
+  return {
+    ...(data as Omit<PosQuotation, 'quotationId'>),
+    quotationId: id,
+    items,
+    subtotal,
+    discountAmount,
+    total,
+  };
 }
 
 function mapJobQuotationAction(quotation: PosQuotation): JobQuotationActionSummary {
@@ -355,7 +401,21 @@ function mapJobQuotationAction(quotation: PosQuotation): JobQuotationActionSumma
 }
 
 function mapInvoice(id: string, data: Record<string, unknown>): PosInvoice {
-  return { ...(data as Omit<PosInvoice, 'invoiceId'>), invoiceId: id };
+  const items = legacyLineItems(data, 'Service invoice');
+  const subtotal = Number(data.subtotal ?? items.reduce((sum, item) => sum + Number(item.total || 0), 0));
+  const discountAmount = Number(data.discountAmount ?? 0);
+  const total = Number(data.total ?? Math.max(0, subtotal - discountAmount));
+  const amountPaid = Number(data.amountPaid ?? 0);
+  return {
+    ...(data as Omit<PosInvoice, 'invoiceId'>),
+    invoiceId: id,
+    items,
+    subtotal,
+    discountAmount,
+    total,
+    amountPaid,
+    balance: Number(data.balance ?? Math.max(0, total - amountPaid)),
+  };
 }
 
 function mapPayment(id: string, data: Record<string, unknown>): PosPayment {
@@ -429,6 +489,7 @@ function normalizeItems(items: PosLineItem[]): PosLineItem[] {
     if (!cleanText(item.name)) throw new Error('Item name is required');
     if (!Number.isFinite(quantity) || quantity <= 0) throw new Error('Item quantity must be valid');
     if (!Number.isFinite(unitPrice) || unitPrice < 0) throw new Error('Item price must be valid');
+    if (!Number.isFinite(discount) || discount < 0) throw new Error('Item discount must be valid');
     const total = Math.max(0, quantity * unitPrice - discount);
     const costPrice = Number(item.costPrice || 0);
     const lineDirectCost = Math.max(0, costPrice * quantity);
@@ -456,7 +517,9 @@ function normalizeItems(items: PosLineItem[]): PosLineItem[] {
 
 function calculateTotals(items: PosLineItem[], discountAmount: number) {
   const subtotal = items.reduce((total, item) => total + Number(item.total || 0), 0);
-  const discount = Math.max(0, Number(discountAmount || 0));
+  const parsedDiscount = Number(discountAmount || 0);
+  if (!Number.isFinite(parsedDiscount) || parsedDiscount < 0) throw new Error('Discount amount must be valid');
+  const discount = Math.max(0, parsedDiscount);
   return { subtotal, discountAmount: discount, total: Math.max(0, subtotal - discount) };
 }
 
@@ -1322,6 +1385,52 @@ export async function createQuotationFromJob(
   return quotation;
 }
 
+export async function updateQuotationLineItems(
+  quotation: PosQuotation,
+  input: Pick<PosDocumentInput, 'items' | 'discountAmount' | 'discountReason' | 'validUntil'>,
+  user: UserData,
+): Promise<PosQuotation> {
+  assertCan(user.role, 'pos.operate');
+  if (user.role === 'manager' && user.branchId && quotation.branchId !== user.branchId) {
+    throw new Error('Permission denied for this branch');
+  }
+  const convertedSnapshot = await getDocs(query(collection(db, 'invoices'), where('quotationId', '==', quotation.quotationId)));
+  if (!convertedSnapshot.empty) throw new Error('Quotation has already been converted to invoice and cannot be edited');
+  if (['rejected', 'expired'].includes(quotation.status) && !can(user.role, 'pos.manage')) {
+    throw new Error('This quotation can no longer be edited');
+  }
+
+  const items = normalizeItems(input.items);
+  const totals = calculateTotals(items, input.discountAmount);
+  await updateDoc(doc(db, 'quotations', quotation.quotationId), {
+    items,
+    ...totals,
+    discountReason: cleanText(input.discountReason),
+    validUntil: dateToTimestamp(input.validUntil),
+    updatedAt: serverTimestamp(),
+  });
+
+  if (quotation.jobId) {
+    await updateDoc(doc(db, 'jobs', quotation.jobId), {
+      quotationAmount: Number(totals.total || 0),
+      updatedAt: serverTimestamp(),
+    }).catch(() => undefined);
+  }
+
+  await writeAuditLog({
+    entityType: 'pos',
+    entityId: quotation.quotationId,
+    action: 'pos_quotation_updated',
+    changedBy: user.uid,
+    changedByDisplayName: displayNameForUser(user),
+    changes: [{ field: 'total', before: quotation.total, after: totals.total }],
+    note: 'Quotation line items updated',
+  }).catch(() => undefined);
+
+  const snapshot = await getDoc(doc(db, 'quotations', quotation.quotationId));
+  return mapQuotation(snapshot.id, snapshot.data() || {});
+}
+
 export async function approveQuotation(quotationId: string, user: UserData): Promise<void> {
   assertCan(user.role, 'pos.operate');
   const quotationSnapshot = await getDoc(doc(db, 'quotations', quotationId));
@@ -1694,6 +1803,52 @@ export async function createInvoiceFromQuotation(quotation: PosQuotation, user: 
     note: 'Quotation converted to invoice',
   });
   return invoice;
+}
+
+export async function updateInvoiceLineItems(
+  invoice: PosInvoice,
+  input: Pick<PosDocumentInput, 'items' | 'discountAmount' | 'discountReason'>,
+  user: UserData,
+): Promise<PosInvoice> {
+  assertCan(user.role, 'pos.operate');
+  if (user.role === 'manager' && user.branchId && invoice.branchId !== user.branchId) {
+    throw new Error('Permission denied for this branch');
+  }
+  if (invoice.paymentStatus === 'void') throw new Error('Void invoices cannot be edited');
+  if (Number(invoice.amountPaid || 0) > 0 && user.role !== 'admin') {
+    throw new Error('Invoice already has payment. Only admin can edit finalized financial details.');
+  }
+
+  const items = normalizeItems(input.items);
+  const totals = calculateTotals(items, input.discountAmount);
+  const amountPaid = Number(invoice.amountPaid || 0);
+  if (amountPaid > totals.total) throw new Error('Invoice total cannot be lower than amount paid');
+  const balance = Math.max(0, totals.total - amountPaid);
+  let paymentStatus: InvoicePaymentStatus = amountPaid <= 0 ? 'unpaid' : balance <= 0 ? 'paid' : 'partial';
+  if (invoice.paymentStatus === 'refunded') paymentStatus = 'refunded';
+
+  await updateDoc(doc(db, 'invoices', invoice.invoiceId), {
+    items,
+    ...totals,
+    discountReason: cleanText(input.discountReason),
+    amountPaid,
+    balance,
+    paymentStatus,
+    updatedAt: serverTimestamp(),
+  });
+
+  await writeAuditLog({
+    entityType: 'pos',
+    entityId: invoice.invoiceId,
+    action: 'pos_invoice_updated',
+    changedBy: user.uid,
+    changedByDisplayName: displayNameForUser(user),
+    changes: [{ field: 'total', before: invoice.total, after: totals.total }],
+    note: 'Invoice line items updated',
+  }).catch(() => undefined);
+
+  const snapshot = await getDoc(doc(db, 'invoices', invoice.invoiceId));
+  return mapInvoice(snapshot.id, snapshot.data() || {});
 }
 
 export async function recordInvoicePayment(invoice: PosInvoice, input: {

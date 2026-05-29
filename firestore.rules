@@ -2862,7 +2862,7 @@ service cloud.firestore {
 
     match /invoices/{invoiceId} {
       allow read: if isAdminOrManager();
-      allow create, update: if isAdminOrManager()
+      allow create: if isAdminOrManager()
         && request.resource.data.invoiceNo is string
         && request.resource.data.customerId is string
         && request.resource.data.customerName is string
@@ -2873,6 +2873,27 @@ service cloud.firestore {
         && request.resource.data.amountPaid is number
         && request.resource.data.balance is number
         && request.resource.data.paymentStatus in ['unpaid', 'partial', 'paid', 'refunded', 'void'];
+      allow update: if isAdminOrManager()
+        && request.resource.data.invoiceNo is string
+        && request.resource.data.customerId is string
+        && request.resource.data.customerName is string
+        && request.resource.data.customerPhone is string
+        && request.resource.data.branchId is string
+        && request.resource.data.items is list
+        && request.resource.data.total is number
+        && request.resource.data.amountPaid is number
+        && request.resource.data.balance is number
+        && request.resource.data.paymentStatus in ['unpaid', 'partial', 'paid', 'refunded', 'void']
+        && (
+          isAdmin()
+          || resource.data.paymentStatus == 'unpaid'
+          || (
+            request.resource.data.items == resource.data.items
+            && request.resource.data.subtotal == resource.data.subtotal
+            && request.resource.data.discountAmount == resource.data.discountAmount
+            && request.resource.data.total == resource.data.total
+          )
+        );
       allow delete: if false;
     }
 

@@ -55,17 +55,19 @@ function formatDate(value: PosPdfDocument['createdAt'] | PosQuotation['validUnti
 function itemLines(items: PosLineItem[], startY: number): { lines: string[]; y: number } {
   const lines = [
     buildPdfLine('Item', 48, startY, 10),
-    buildPdfLine('Qty', 318, startY, 10),
-    buildPdfLine('Unit', 370, startY, 10),
-    buildPdfLine('Total', 465, startY, 10),
+    buildPdfLine('Qty', 278, startY, 10),
+    buildPdfLine('Unit', 326, startY, 10),
+    buildPdfLine('Disc', 408, startY, 10),
+    buildPdfLine('Total', 472, startY, 10),
   ];
   let y = startY - 18;
 
   items.forEach((item) => {
-    lines.push(buildPdfLine(item.name.slice(0, 42), 48, y, 9));
-    lines.push(buildPdfLine(String(item.quantity), 318, y, 9));
-    lines.push(buildPdfLine(formatCurrency(item.unitPrice), 370, y, 9));
-    lines.push(buildPdfLine(formatCurrency(item.total), 465, y, 9));
+    lines.push(buildPdfLine(item.name.slice(0, 36), 48, y, 9));
+    lines.push(buildPdfLine(String(item.quantity), 278, y, 9));
+    lines.push(buildPdfLine(formatCurrency(item.unitPrice), 326, y, 9));
+    lines.push(buildPdfLine(formatCurrency(Number(item.discount || 0)), 408, y, 9));
+    lines.push(buildPdfLine(formatCurrency(item.total), 472, y, 9));
     y -= 14;
     if (item.warrantyDurationDays && item.warrantyDurationDays > 0) {
       lines.push(buildPdfLine(`Warranty: ${item.warrantyDurationDays} days`, 64, y, 8));

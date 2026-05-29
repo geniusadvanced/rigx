@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { getAuditLogsForEntity } from '@/features/audit/services/auditLogService';
 import type { AuditLog } from '@/features/audit/types';
+import { PosLineItemsEditor } from '@/features/pos/components/PosLineItemsEditor';
 import { downloadInvoicePdf, downloadReceiptPdf, downloadRefundPdf } from '@/features/pos/generatePosPdf';
 import {
   buildInvoiceWhatsAppLink,
@@ -23,11 +24,12 @@ import {
   regenerateInvoicePaymentToken,
   revokeInvoicePaymentToken,
   reverseInvoicePayment,
+  updateInvoiceLineItems,
   voidInvoice,
 } from '@/features/pos/posService';
 import { buildInvoiceWithWarrantyWhatsAppLink, buildInvoiceWithWarrantyWhatsAppMessage, buildPaymentReminderWhatsAppLink, buildWarrantyWhatsAppLink, sendPosWhatsAppBusinessMessage } from '@/features/pos/whatsappService';
 import { getWhatsAppInboundMessagesForEntity, getWhatsAppMessagesForEntity, type PosWhatsAppInboundMessage, type PosWhatsAppMessageLog } from '@/features/pos/whatsappMessageService';
-import type { PosInvoice, PosPayment, PosPaymentMethod, PosQuotation, PosRefund, PosWarranty } from '@/features/pos/types';
+import type { PosInvoice, PosLineItem, PosPayment, PosPaymentMethod, PosQuotation, PosRefund, PosWarranty } from '@/features/pos/types';
 import { useUser } from '@/lib/hooks/useUser';
 import { can } from '@/lib/rbac/can';
 
@@ -61,6 +63,10 @@ export default function PosInvoiceDetailPage() {
   const [reversalTarget, setReversalTarget] = useState<PosPayment | null>(null);
   const [reversalReason, setReversalReason] = useState('');
   const [refundForm, setRefundForm] = useState({ amount: '', method: 'cash' as PosPaymentMethod, reason: '', paymentId: '' });
+  const [editOpen, setEditOpen] = useState(false);
+  const [editItems, setEditItems] = useState<PosLineItem[]>([]);
+  const [editDiscountAmount, setEditDiscountAmount] = useState('0');
+  const [editDiscountReason, setEditDiscountReason] = useState('');
   const canOperate = can(profile?.role, 'pos.operate');
   const canManage = can(profile?.role, 'pos.manage');
 
@@ -154,6 +160,51 @@ export default function PosInvoiceDetailPage() {
       await loadInvoice();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to create refund');
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  function openEditInvoice() {
+    if (!invoice) return;
+    if (invoice.paymentStatus === 'void') {
+      setMessage('Void invoices cannot be edited.');
+      return;
+    }
+    if (Number(invoice.amountPaid || 0) > 0 && profile?.role !== 'admin') {
+      setMessage('Invoice already has payment. Only admin can edit finalized financial details.');
+      return;
+    }
+    setEditItems(invoice.items.length ? invoice.items : [{
+      name: 'Service invoice',
+      category: 'Service',
+      type: 'service',
+      quantity: 1,
+      unitPrice: Number(invoice.total || 0),
+      discount: 0,
+      total: Number(invoice.total || 0),
+    }]);
+    setEditDiscountAmount(String(invoice.discountAmount || 0));
+    setEditDiscountReason(invoice.discountReason || '');
+    setEditOpen(true);
+  }
+
+  async function handleSaveInvoiceEdit() {
+    if (!profile || !invoice) return;
+    setActionLoading(true);
+    setMessage('');
+    try {
+      const updated = await updateInvoiceLineItems(invoice, {
+        items: editItems,
+        discountAmount: Number(editDiscountAmount || 0),
+        discountReason: editDiscountReason,
+      }, profile);
+      setInvoice(updated);
+      setEditOpen(false);
+      setMessage('Invoice updated successfully.');
+      await loadInvoice();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to update invoice');
     } finally {
       setActionLoading(false);
     }
@@ -354,8 +405,8 @@ export default function PosInvoiceDetailPage() {
 
           <div className="overflow-x-auto rounded-3xl border border-white/10 bg-[#111111]/90">
             <table className="min-w-full text-left text-sm">
-              <thead className="border-b border-white/10 text-xs uppercase text-zinc-500"><tr><th className="px-4 py-3">Item</th><th className="px-4 py-3">Qty</th><th className="px-4 py-3">Unit</th><th className="px-4 py-3">Total</th></tr></thead>
-              <tbody>{invoice.items.map((item, index) => <tr key={`${item.name}-${index}`} className="border-b border-white/10 last:border-b-0"><td className="px-4 py-3 text-white">{item.name}</td><td className="px-4 py-3 text-zinc-300">{item.quantity}</td><td className="px-4 py-3 text-zinc-300">{formatCurrency(item.unitPrice)}</td><td className="px-4 py-3 text-zinc-300">{formatCurrency(item.total)}</td></tr>)}</tbody>
+              <thead className="border-b border-white/10 text-xs uppercase text-zinc-500"><tr><th className="px-4 py-3">Item</th><th className="px-4 py-3">Qty</th><th className="px-4 py-3">Unit</th><th className="px-4 py-3">Discount</th><th className="px-4 py-3">Total</th></tr></thead>
+              <tbody>{invoice.items.map((item, index) => <tr key={`${item.name}-${index}`} className="border-b border-white/10 last:border-b-0"><td className="px-4 py-3 text-white">{item.name}</td><td className="px-4 py-3 text-zinc-300">{item.quantity}</td><td className="px-4 py-3 text-zinc-300">{formatCurrency(item.unitPrice)}</td><td className="px-4 py-3 text-zinc-300">{formatCurrency(Number(item.discount || 0))}</td><td className="px-4 py-3 text-zinc-300">{formatCurrency(item.total)}</td></tr>)}</tbody>
             </table>
           </div>
 
@@ -441,6 +492,8 @@ export default function PosInvoiceDetailPage() {
               <div className="flex justify-between text-lg font-semibold text-white"><span>Balance</span><span>{formatCurrency(invoice.balance)}</span></div>
             </div>
             <div className="mt-4 grid gap-2">
+              {!isVoid ? <button type="button" onClick={openEditInvoice} disabled={actionLoading || (Number(invoice.amountPaid || 0) > 0 && profile?.role !== 'admin')} className="rounded-xl border border-orange-500/20 bg-[#141414] px-4 py-2 text-center text-sm text-orange-200 disabled:opacity-50">Edit Invoice</button> : null}
+              {Number(invoice.amountPaid || 0) > 0 && profile?.role !== 'admin' ? <div className="text-xs text-zinc-500">Invoices with payment are locked for non-admin users.</div> : null}
               {!isVoid ? <button type="button" onClick={handleWhatsAppInvoice} disabled={actionLoading} className="rounded-xl border border-orange-500/20 bg-[#141414] px-4 py-2 text-center text-sm text-orange-200 disabled:opacity-50">WhatsApp Invoice</button> : null}
               {!isVoid && !invoice.jobId ? <button type="button" onClick={handleWarrantyTermsWhatsApp} disabled={actionLoading} className="rounded-xl border border-emerald-500/20 bg-[#141414] px-4 py-2 text-center text-sm text-emerald-200 disabled:opacity-50">Send Warranty/Terms for Signature</button> : null}
               {!isVoid && invoice.balance > 0 ? <button type="button" onClick={handleWhatsAppPaymentReminder} disabled={actionLoading} className="rounded-xl border border-orange-500/20 bg-[#141414] px-4 py-2 text-center text-sm text-orange-200 disabled:opacity-50">WhatsApp Payment Reminder</button> : null}
@@ -466,6 +519,31 @@ export default function PosInvoiceDetailPage() {
       </div>
 
       {reversalTarget ? <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"><div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#151515] p-5"><h2 className="text-lg font-semibold text-white">Reverse payment</h2><textarea value={reversalReason} onChange={(event) => setReversalReason(event.target.value)} placeholder="Reversal reason" className="mt-4 min-h-24 w-full rounded-xl border border-white/10 bg-[#050505] px-3 py-2 text-sm text-white" /><div className="mt-5 flex justify-end gap-2"><button onClick={() => setReversalTarget(null)} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300">Cancel</button><button disabled={actionLoading || !reversalReason.trim()} onClick={handleReverse} className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Reverse</button></div></div></div> : null}
+      {editOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="max-h-[90vh] w-full max-w-5xl overflow-auto rounded-3xl border border-white/10 bg-[#151515] p-5">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-white">Edit Invoice</h2>
+                <p className="mt-1 text-sm text-zinc-400">{invoice.invoiceNo} · {invoice.customerName}</p>
+              </div>
+              <button type="button" onClick={() => setEditOpen(false)} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300">Close</button>
+            </div>
+            <PosLineItemsEditor
+              items={editItems}
+              discountAmount={editDiscountAmount}
+              discountReason={editDiscountReason}
+              onItemsChange={setEditItems}
+              onDiscountAmountChange={setEditDiscountAmount}
+              onDiscountReasonChange={setEditDiscountReason}
+            />
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setEditOpen(false)} disabled={actionLoading} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 disabled:opacity-50">Cancel</button>
+              <button type="button" onClick={handleSaveInvoiceEdit} disabled={actionLoading} className="rounded-xl bg-gradient-to-r from-[#C96A2B] to-[#F97316] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{actionLoading ? 'Saving...' : 'Save Invoice'}</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

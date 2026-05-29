@@ -139,6 +139,7 @@ export default function PosQuotationsPage() {
                 <td className="px-4 py-3 text-zinc-300">{quotation.status}</td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-2">
+                    <Link href={`/dashboard/pos/quotations/${quotation.quotationId}`} className="text-orange-200">Edit</Link>
                     <button disabled={actionLoading || quotation.status === 'approved' || quotation.status === 'rejected'} className="text-orange-200 disabled:text-zinc-600" onClick={() => openWhatsApp(quotation)}>Send Quotation via WhatsApp</button>
                     <button onClick={() => downloadQuotationPdf(quotation)} className="text-orange-200">PDF</button>
                     {quotation.status === 'draft' ? <button onClick={() => openConfirm(quotation, 'sent')} className="text-orange-200">Mark as sent</button> : null}
