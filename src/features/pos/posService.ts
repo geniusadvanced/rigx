@@ -1547,6 +1547,69 @@ export async function approvePosQuotation(
   });
 }
 
+export async function syncApprovedJobQuotation(job: Job, user: UserData): Promise<PosQuotation | null> {
+  assertCan(user.role, 'pos.operate');
+  if (!job.docId || job.quotationStatus !== 'approved') return null;
+  if (user.role === 'manager' && user.branchId && job.branchId !== user.branchId) {
+    throw new Error('Permission denied for this branch');
+  }
+
+  let quotation: PosQuotation | null = null;
+  if (job.quotationId) {
+    quotation = await getQuotationById(job.quotationId, user).catch(() => null);
+  }
+  if (!quotation) {
+    const snapshot = await getDocs(query(collection(db, 'quotations'), where('jobId', '==', job.docId)));
+    const rows = snapshot.docs.map((quoteDoc) => mapQuotation(quoteDoc.id, quoteDoc.data()));
+    quotation = rows.find((row) => row.status === 'approved' || row.quotationApprovalStatus === 'approved')
+      || rows.find((row) => ['draft', 'sent'].includes(row.status) && Number(row.total || 0) > 0)
+      || rows[0]
+      || null;
+  }
+  if (!quotation) return null;
+
+  if (quotation.status === 'approved' && quotation.quotationApprovalStatus === 'approved') return quotation;
+  if (!['draft', 'sent', 'approved'].includes(quotation.status)) return quotation;
+
+  const approvedByName = job.quotationApprovedByDisplayName || displayNameForUser(user);
+  await updateDoc(doc(db, 'quotations', quotation.quotationId), {
+    status: 'approved',
+    quotationApprovalStatus: 'approved',
+    approvedBy: user.uid,
+    approvedByName: displayNameForUser(user),
+    quotationApprovedByName: approvedByName,
+    approvalMethod: 'job_quotation_status_sync',
+    manualApproval: false,
+    manualApprovalName: approvedByName,
+    manualApprovalNotes: 'Synced from approved job quotation status',
+    termsAccepted: true,
+    approvedAt: quotation.approvedAt || serverTimestamp(),
+    quotationApprovedAt: quotation.quotationApprovedAt || job.quotationApprovedAt || serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  if (!job.quotationId) {
+    await updateDoc(doc(db, 'jobs', job.docId), {
+      quotationId: quotation.quotationId,
+      quotationNumber: quotation.quotationNumber || quotation.quotationNo,
+      quotationAmount: Number(quotation.total || job.quotationAmount || 0),
+      updatedAt: serverTimestamp(),
+    }).catch(() => undefined);
+  }
+
+  await writeAuditLog({
+    entityType: 'pos',
+    entityId: quotation.quotationId,
+    action: 'pos_quotation_approved',
+    changedBy: user.uid,
+    changedByDisplayName: displayNameForUser(user),
+    changes: [{ field: 'status', before: quotation.status, after: 'approved' }],
+    note: 'POS quotation approval synced from approved job quotation',
+  }).catch(() => undefined);
+
+  return getQuotationById(quotation.quotationId, user);
+}
+
 export async function rejectPosQuotation(quotation: PosQuotation, reason: string, user: UserData): Promise<void> {
   assertCan(user.role, 'pos.operate');
   const rejectionReason = cleanText(reason);

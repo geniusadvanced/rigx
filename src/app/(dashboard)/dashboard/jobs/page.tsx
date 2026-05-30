@@ -130,10 +130,11 @@ import {
   recordInvoicePayment,
   rejectPosQuotation,
   buildInvoiceWhatsAppLink,
+  syncApprovedJobQuotation,
   type JobFinancialSummary,
   type JobQuotationActionSummary,
 } from '@/features/pos/posService';
-import type { PosInvoice, PosLineItem, PosPayment, PosPaymentMethod, PosWarranty, PriceItem } from '@/features/pos/types';
+import type { PosInvoice, PosLineItem, PosPayment, PosPaymentMethod, PosQuotation, PosWarranty, PriceItem } from '@/features/pos/types';
 import {
   buildReadyForPickupWhatsAppMessage,
   buildReceiptWhatsAppLink,
@@ -973,12 +974,18 @@ export default function JobsPage() {
       && (Boolean(quotation.hasLineItems) || Number(quotation.total || 0) > 0)
     )) || null;
   }, [jobQuotationActions]);
-  const approvedJobQuotationForInvoice = useMemo(() => (
-    jobQuotationActions.find((quotation) => (
+  const approvedJobQuotationForInvoice = useMemo(() => {
+    const approvedPosQuotation = jobQuotationActions.find((quotation) => (
       (quotation.status === 'approved' || quotation.quotationApprovalStatus === 'approved')
       && Number(quotation.total || 0) > 0
-    )) || null
-  ), [jobQuotationActions]);
+    ));
+    if (approvedPosQuotation) return approvedPosQuotation;
+    if (selectedJob?.quotationStatus !== 'approved') return null;
+    return jobQuotationActions.find((quotation) => (
+      quotation.quotationId === selectedJob.quotationId
+      && Number(quotation.total || 0) > 0
+    )) || jobQuotationActions.find((quotation) => Number(quotation.total || 0) > 0) || null;
+  }, [jobQuotationActions, selectedJob?.quotationId, selectedJob?.quotationStatus]);
   const canMakeQuotationForSelectedJob = Boolean(
     profile
       && selectedJob
@@ -3071,6 +3078,11 @@ export default function JobsPage() {
         rejectedReason: quotationRejectReason,
         proofFile: quotationProofFile,
       });
+      if (nextStatus === 'approved') {
+        await syncApprovedJobQuotation({ ...selectedJob, quotationStatus: 'approved' }, profile).catch((syncError) => {
+          console.warn('[JOB QUOTATION SYNC WARNING]', normalizeUnknownError(syncError));
+        });
+      }
       setMessage(
         nextStatus === 'sent'
           ? 'Quotation sent'
@@ -3897,7 +3909,14 @@ export default function JobsPage() {
       return;
     }
     const approvedQuotation = approvedJobQuotationForInvoice;
-    if (!approvedQuotation) {
+    let quotationForInvoice: PosQuotation | null = null;
+    if (approvedQuotation) {
+      quotationForInvoice = await getQuotationById(approvedQuotation.quotationId, profile).catch(() => null);
+    }
+    if (!quotationForInvoice && selectedJob.quotationStatus === 'approved') {
+      quotationForInvoice = await syncApprovedJobQuotation(selectedJob, profile).catch(() => null);
+    }
+    if (!quotationForInvoice) {
       const errorMessage = 'No approved quotation found. Create and approve quotation first.';
       if (showPaymentModal) setPaymentModalError(errorMessage);
       setMessage(errorMessage);
@@ -3907,7 +3926,19 @@ export default function JobsPage() {
     setMessage('');
     setPaymentModalError(null);
     try {
-      const quotation = await getQuotationById(approvedQuotation.quotationId, profile);
+      let quotation = quotationForInvoice;
+      if (
+        selectedJob.quotationStatus === 'approved'
+        && (quotation.status !== 'approved' || quotation.quotationApprovalStatus !== 'approved')
+      ) {
+        quotation = await syncApprovedJobQuotation(selectedJob, profile) || quotation;
+      }
+      if (quotation.status !== 'approved') {
+        const errorMessage = 'Attached quotation is not approved yet. Please approve the quotation first.';
+        if (showPaymentModal) setPaymentModalError(errorMessage);
+        setMessage(errorMessage);
+        return;
+      }
       if (Number(quotation.total || 0) <= 0) {
         const errorMessage = 'Approved quotation amount must be greater than 0 before generating invoice.';
         if (showPaymentModal) setPaymentModalError(errorMessage);
